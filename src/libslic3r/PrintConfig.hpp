@@ -1411,6 +1411,7 @@ PRINT_CONFIG_CLASS_DERIVED_DEFINE(
     ((ConfigOptionBool,                exclude_object))
     ((ConfigOptionBool,                gcode_comments))
     ((ConfigOptionInt,                 slow_down_layers))
+    ((ConfigOptionInts,                support_material_fan_speed)) // ORCA: Add support for separate support material fan speed control
     ((ConfigOptionInts,                support_material_interface_fan_speed))
     ((ConfigOptionInts,                internal_bridge_fan_speed)) // ORCA: Add support for separate internal bridge fan speed control
     ((ConfigOptionInts,                ironing_fan_speed))
