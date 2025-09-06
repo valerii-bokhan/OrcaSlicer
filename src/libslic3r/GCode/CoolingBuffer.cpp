@@ -65,12 +65,15 @@ struct CoolingLine
         TYPE_FORCE_RESUME_FAN   = 1 << 14,
         TYPE_SUPPORT_INTERFACE_FAN_START     = 1 << 15,
         TYPE_SUPPORT_INTERFACE_FAN_END       = 1 << 16,
+        // ORCA: Add support for separate support material fan speed control
+        TYPE_SUPPORT_MATERIAL_FAN_START = 1 << 17,
+        TYPE_SUPPORT_MATERIAL_FAN_END   = 1 << 18,
         // ORCA: Add support for separate internal bridge fan speed control
-        TYPE_INTERNAL_BRIDGE_FAN_START = 1 << 17,
-        TYPE_INTERNAL_BRIDGE_FAN_END   = 1 << 18,
+        TYPE_INTERNAL_BRIDGE_FAN_START = 1 << 19,
+        TYPE_INTERNAL_BRIDGE_FAN_END   = 1 << 20,
         // ORCA: Add support for ironing fan speed control
-        TYPE_IRONING_FAN_START         = 1 << 19,
-        TYPE_IRONING_FAN_END           = 1 << 20,
+        TYPE_IRONING_FAN_START         = 1 << 21,
+        TYPE_IRONING_FAN_END           = 1 << 22,
     };
 
     CoolingLine(unsigned int type, size_t  line_start, size_t  line_end) :
@@ -525,6 +528,10 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             line.type = CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START;
         } else if (boost::starts_with(sline, ";_SUPP_INTERFACE_FAN_END")) {
             line.type = CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_END;
+        } else if (boost::starts_with(sline, ";_SUPP_MATERIAL_FAN_START")) { // ORCA: Add support for separate support material fan speed control
+            line.type = CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START;
+        } else if (boost::starts_with(sline, ";_SUPP_MATERIAL_FAN_END")) { // ORCA: Add support for separate support material fan speed control
+            line.type = CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_END;
         } else if (boost::starts_with(sline, ";_IRONING_FAN_START")) { // ORCA: Add support for ironing fan speed control
             line.type = CoolingLine::TYPE_IRONING_FAN_START;
         } else if (boost::starts_with(sline, ";_IRONING_FAN_END")) { // ORCA: Add support for ironing fan speed control
@@ -721,6 +728,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
     int  overhang_fan_speed   = 0;
     bool internal_bridge_fan_control= false; // ORCA: Add support for separate internal bridge fan speed control
     int  internal_bridge_fan_speed   = 0; // ORCA: Add support for separate internal bridge fan speed control
+    bool supp_material_fan_control   = false; // ORCA: Add support for separate support material fan speed control
+    int  supp_material_fan_speed    = 0; // ORCA: Add support for separate support material fan speed control
     bool supp_interface_fan_control= false;
     int  supp_interface_fan_speed = 0;
     bool ironing_fan_control= false; // ORCA: Add support for ironing fan speed control
@@ -728,6 +737,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
     auto change_extruder_set_fan = [ this, layer_id, layer_time, &new_gcode,
         &overhang_fan_control, &overhang_fan_speed,
         &internal_bridge_fan_control, &internal_bridge_fan_speed,
+        &supp_material_fan_control, &supp_material_fan_speed,
         &supp_interface_fan_control, &supp_interface_fan_speed,
         &ironing_fan_control, &ironing_fan_speed
     ](bool immediately_apply) {
@@ -740,6 +750,9 @@ std::string CoolingBuffer::apply_layer_cooldown(
         // Is the fan speed ramp enabled?
         int full_fan_speed_layer = EXTRUDER_CONFIG(full_fan_speed_layer);
         supp_interface_fan_speed = EXTRUDER_CONFIG(support_material_interface_fan_speed);
+
+        // ORCA: Add support for separate support material fan speed control
+        supp_material_fan_speed  = EXTRUDER_CONFIG(support_material_fan_speed);
 
         if (close_fan_the_first_x_layers <= 0 && full_fan_speed_layer > 0) {
             // When ramping up fan speed from close_fan_the_first_x_layers to full_fan_speed_layer, force close_fan_the_first_x_layers above zero,
@@ -772,6 +785,10 @@ std::string CoolingBuffer::apply_layer_cooldown(
             supp_interface_fan_speed = EXTRUDER_CONFIG(support_material_interface_fan_speed);
             supp_interface_fan_control = supp_interface_fan_speed >= 0;
 
+            // ORCA: Add support for separate support material fan speed control
+            supp_material_fan_speed   = EXTRUDER_CONFIG(support_material_fan_speed);
+            supp_material_fan_control = supp_material_fan_speed >= 0;
+
             overhang_fan_control = overhang_fan_speed > fan_speed_new;
             
             // ORCA: Add support for separate internal bridge fan speed control
@@ -793,6 +810,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
             overhang_fan_speed   = 0;
             fan_speed_new      = 0;
             additional_fan_speed_new = 0;
+            supp_material_fan_control  = false; // ORCA: Add support for separate support material fan speed control
+            supp_material_fan_speed     = 0; // ORCA: Add support for separate support material fan speed control
             supp_interface_fan_control = false; 
             supp_interface_fan_speed   = 0;
             internal_bridge_fan_control = false; // ORCA: Add support for separate internal bridge fan speed control
@@ -822,6 +841,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
     // define fan_speed_change_requests and initialize it with all possible types fan speed change requests
     std::unordered_map<int, bool> fan_speed_change_requests = {{CoolingLine::TYPE_OVERHANG_FAN_START, false},
                                                                {CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START, false}, // ORCA: Add support for separate internal bridge fan speed control
+                                                               {CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START, false}, // ORCA: Add support for separate support material fan speed control
                                                                {CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START, false},
                                                                {CoolingLine::TYPE_IRONING_FAN_START, false}, // ORCA: Add support for ironing fan speed control
                                                                {CoolingLine::TYPE_FORCE_RESUME_FAN, false}};
@@ -860,6 +880,16 @@ std::string CoolingBuffer::apply_layer_cooldown(
         } else if (line->type & CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_END) { // ORCA: Add support for separate internal bridge fan speed control
             if (internal_bridge_fan_control && fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START]) {
                 fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START] = false;
+            }
+            need_set_fan = true;
+        } else if (line->type & CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START) { // ORCA: Add support for separate support material fan speed control
+            if (supp_material_fan_control && !fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START]) {
+                fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START] = true;
+                need_set_fan = true;
+            }
+        } else if (line->type & CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_END && fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START]) { // ORCA: Add support for separate support material fan speed control
+            if (supp_material_fan_control) {
+                fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START] = false;
             }
             need_set_fan = true;
         } else if (line->type & CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START) {
@@ -983,6 +1013,10 @@ std::string CoolingBuffer::apply_layer_cooldown(
             } else if (fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START]){ // ORCA: Add support for separate internal bridge fan speed control
                 new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, internal_bridge_fan_speed);
                 m_current_fan_speed = internal_bridge_fan_speed;
+            }
+            else if (fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_MATERIAL_FAN_START]){ // ORCA: Add support for separate support material fan speed control
+                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, supp_material_fan_speed);
+                m_current_fan_speed = supp_material_fan_speed;
             }
             else if (fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START]){
                 new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, supp_interface_fan_speed);

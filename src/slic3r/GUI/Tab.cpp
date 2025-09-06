@@ -3591,6 +3591,7 @@ void TabFilament::build()
         optgroup->append_single_option_line("overhang_fan_threshold");
         optgroup->append_single_option_line("overhang_fan_speed");
         optgroup->append_single_option_line("internal_bridge_fan_speed"); // ORCA: Add support for separate internal bridge fan speed control
+        optgroup->append_single_option_line("support_material_fan_speed"); // ORCA: Add support for separate support material fan speed control
         optgroup->append_single_option_line("support_material_interface_fan_speed");
         optgroup->append_single_option_line("ironing_fan_speed"); // ORCA: Add support for ironing fan speed control
 

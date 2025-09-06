@@ -2855,7 +2855,18 @@ void PrintConfigDef::init_fff_params()
     def->max = 1000;
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionInts { 0 });
-    
+ 
+    // ORCA: Add support for separate support material fan speed control
+    def = this->add("support_material_fan_speed", coInts);
+    def->label = L("Support material fan speed");
+    def->tooltip = L("This part cooling fan speed is applied when printing supports."
+                    "\nSet to -1 to disable it.");
+    def->sidetext = "%";
+    def->min = -1;
+    def->max = 100;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionInts{ -1 });
+
     def = this->add("support_material_interface_fan_speed", coInts);
     def->label = L("Support interface fan speed");
     def->tooltip = L("This part cooling fan speed is applied when printing support interfaces. Setting this parameter to a higher than regular speed "
