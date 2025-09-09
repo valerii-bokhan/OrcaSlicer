@@ -13207,7 +13207,7 @@ msgid ""
 "a cross texture."
 msgstr ""
 
-msgid "Sparse infill rotatation template"
+msgid "Sparse infill rotation template"
 msgstr ""
 
 msgid ""
@@ -13228,7 +13228,7 @@ msgstr ""
 msgid "°"
 msgstr "°"
 
-msgid "Solid infill rotatation template"
+msgid "Solid infill rotation template"
 msgstr "Поворот шаблона сплошного заполнения"
 
 msgid ""
