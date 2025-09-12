@@ -1621,6 +1621,17 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         }
     }
 
+    // Orca:
+    // FIXME: independent_support_layer_height and tree_support_adaptive_layer_height serve the same purpose.
+    // It would be great to have only one variable instead of two.
+    if (opt_key == "tree_support_adaptive_layer_height") {
+        if (m_config->opt_bool("tree_support_adaptive_layer_height") && !m_config->opt_bool("independent_support_layer_height")) {
+            DynamicPrintConfig new_conf = *m_config;
+            new_conf.set_key_value("independent_support_layer_height", new ConfigOptionBool(true));
+            m_config_manipulation.apply(m_config, &new_conf);
+        }
+    }
+
     if(opt_key == "make_overhang_printable"){
         if(m_config->opt_bool("make_overhang_printable")){
             wxString msg_text = _(
