@@ -121,7 +121,7 @@ Vec2d CameraUtils::get_z0_position(const Camera &camera, const Vec2d & coor)
 
     // is approx zero
     if ((fabs(dir.z()) - 1e-4) < 0)
-        return Vec2d(std::numeric_limits<double>::max(), 
+        return Vec2d(std::numeric_limits<double>::max(),
                      std::numeric_limits<double>::max());
 
     // find position of ray cross plane(z = 0)
