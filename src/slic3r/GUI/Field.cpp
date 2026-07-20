@@ -115,7 +115,7 @@ wxString get_formatted_tooltip_text(const ConfigOptionDef& opt, const t_config_o
     std::string opt_key = id;
     int opt_idx = 0;
 
-    const int hash_pos = static_cast<std::string>(id).find("#");
+    const size_t hash_pos = static_cast<std::string>(id).find("#");
 
     if (hash_pos != std::string::npos) {
         parameter_name.replace(hash_pos, 1, "[");
@@ -123,7 +123,7 @@ wxString get_formatted_tooltip_text(const ConfigOptionDef& opt, const t_config_o
 
         std::string temp_str = id;
         boost::erase_head(temp_str, hash_pos + 1);
-        int orig_opt_idx = static_cast<size_t>(atoi(temp_str.c_str()));
+        size_t orig_opt_idx = atoi(temp_str.c_str());
         opt_idx = orig_opt_idx >= 0 ? orig_opt_idx : 0;
 
         boost::erase_tail(opt_key, opt_key.size() - hash_pos);
