@@ -5713,7 +5713,29 @@ LayerResult GCode::process_layer(
             }
             break;
         }
+        case CalibMode::Calib_Seam: {
+            // Sweep seam_gap or wipe_distance across the tower height.
+            // interpolate_value_across_layers maps the current layer to a value
+            // between start and end, stepping by seam_step.
+            const auto& sp = print.calib_params();
+            float val = this->interpolate_value_across_layers(static_cast<float>(sp.seam_start),
+                                                              static_cast<float>(sp.seam_end),
+                                                              static_cast<float>(sp.seam_step));
+            if (sp.seam_test == Calib_Params::SeamCalibTest::Gap) {
+                // seam_gap is a ConfigOptionFloatOrPercent — use absolute mm
+                m_calib_config.set_key_value("seam_gap", new ConfigOptionFloatOrPercent(val, false));
+            } else {
+                // wipe_distance is a ConfigOptionFloats (per-extruder)
+                m_calib_config.set_key_value("wipe_distance", new ConfigOptionFloats{val});
+            }
+            break;
+        }
     }
+
+    // Apply calibration overrides immediately so that extrude_loop() reads
+    // the correct per-layer values (seam_gap is read before the first extrude_path
+    // call, which is where m_config.apply(m_calib_config) normally happens).
+    m_config.apply(m_calib_config);
 
     //BBS
     if (first_layer) {
@@ -7588,6 +7610,9 @@ std::string GCode::extrude_perimeters(const Print &print, const std::vector<Obje
     for (const ObjectByExtruder::Island::Region &region : by_region)
         if (! region.perimeters.empty()) {
             m_config.apply(print.get_print_region(&region - &by_region.front()).config());
+            // Re-apply calibration overrides after region config, which may have
+            // reset seam_gap / wipe_distance to their non-calibrated defaults.
+            m_config.apply(m_calib_config);
             // BBS: for first layer, we always print wall firstly to get better bed adhesive force
             // This behaviour is same with cura
             const bool should_print = is_first_layer ? !is_infill_first

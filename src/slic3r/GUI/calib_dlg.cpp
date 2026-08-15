@@ -1728,4 +1728,195 @@ void FlowRateCalibrationDialog::on_dpi_changed(const wxRect& suggested_rect) {
     this->Refresh();
 }
 
+// SeamCalibration_Dlg
+//
+
+SeamCalibration_Dlg::SeamCalibration_Dlg(wxWindow* parent, wxWindowID id, Plater* plater)
+    : DPIDialog(parent, id, _L("Seam Calibration"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE), m_plater(plater)
+{
+    SetBackgroundColour(*wxWHITE);
+    SetForegroundColour(wxColour("#363636"));
+    SetFont(Label::Body_14);
+
+    wxBoxSizer* v_sizer = new wxBoxSizer(wxVERTICAL);
+    SetSizer(v_sizer);
+
+    // Warning: PA must be calibrated first
+    auto pa_warning_text = new wxStaticText(this, wxID_ANY, _L("Note: Pressure Advance should be calibrated before tuning seam settings."), wxDefaultPosition, wxDefaultSize, wxALIGN_LEFT);
+    pa_warning_text->SetForegroundColour(wxColour(128, 128, 128));
+    pa_warning_text->Wrap(FromDIP(320));
+    v_sizer->Add(pa_warning_text, 0, wxTOP | wxRIGHT | wxLEFT, FromDIP(10));
+
+    // Test type selection
+    auto labeled_box_type = new LabeledStaticBox(this, _L("Parameter to calibrate"));
+    auto type_box = new wxStaticBoxSizer(labeled_box_type, wxVERTICAL);
+
+    m_rbTestType = new RadioGroup(this, { _L("Seam Gap"), _L("Wipe Distance") }, wxVERTICAL);
+    m_rbTestType->SetRadioTooltip(0, _L("Vary seam_gap — the shortening of the loop at the seam to hide it."));
+    m_rbTestType->SetRadioTooltip(1, _L("Vary wipe_distance — how far the nozzle wipes along the last path while retracting."));
+    type_box->Add(m_rbTestType, 0, wxALL | wxEXPAND, FromDIP(4));
+    v_sizer->Add(type_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
+    // Sweep settings
+    wxString start_str       = _L("Start: ");
+    wxString end_str         = _L("End: ");
+    wxString step_str        = _L("Step: ");
+    wxString sample_h_str    = _L("Sample height: ");
+    int text_max = GetTextMax(this, std::vector<wxString>{start_str, end_str, step_str, sample_h_str});
+
+    LabeledStaticBox* stb = new LabeledStaticBox(this, _L("Settings"));
+    wxStaticBoxSizer* settings_sizer = new wxStaticBoxSizer(stb, wxVERTICAL);
+
+    settings_sizer->AddSpacer(FromDIP(5));
+
+    auto st_size = wxSize(text_max, -1);
+    auto ti_size = FromDIP(wxSize(120, -1));
+
+    // Start
+    auto start_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto start_text = new wxStaticText(this, wxID_ANY, start_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiStart = new TextInput(this, wxString::FromDouble(0.0), _L("mm"), "", wxDefaultPosition, ti_size);
+    m_tiStart->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    start_sizer->Add(start_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    start_sizer->Add(m_tiStart, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    settings_sizer->Add(start_sizer, 0, wxLEFT, FromDIP(3));
+
+    // End
+    auto end_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto end_text = new wxStaticText(this, wxID_ANY, end_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiEnd = new TextInput(this, wxString::FromDouble(0.3), _L("mm"), "", wxDefaultPosition, ti_size);
+    m_tiEnd->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    end_sizer->Add(end_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    end_sizer->Add(m_tiEnd, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    settings_sizer->Add(end_sizer, 0, wxLEFT, FromDIP(3));
+
+    // Step
+    auto step_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto step_text = new wxStaticText(this, wxID_ANY, step_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiStep = new TextInput(this, wxString::FromDouble(0.05), _L("mm"), "", wxDefaultPosition, ti_size);
+    m_tiStep->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    step_sizer->Add(step_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    step_sizer->Add(m_tiStep, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    settings_sizer->Add(step_sizer, 0, wxLEFT, FromDIP(3));
+
+    // Sample height
+    auto sample_h_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto sample_h_text = new wxStaticText(this, wxID_ANY, sample_h_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiSampleHeight = new TextInput(this, wxString::FromDouble(1.0), _L("mm"), "", wxDefaultPosition, ti_size);
+    m_tiSampleHeight->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    sample_h_sizer->Add(sample_h_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    sample_h_sizer->Add(m_tiSampleHeight, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    settings_sizer->Add(sample_h_sizer, 0, wxLEFT, FromDIP(3));
+
+    settings_sizer->AddSpacer(FromDIP(5));
+
+    v_sizer->Add(settings_sizer, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+    v_sizer->AddSpacer(FromDIP(5));
+
+    auto dlg_btns = new DialogButtons(this, {"OK"});
+
+    auto bottom_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto wiki = new HyperLink(this, _L("Wiki Guide"), "https://www.orcaslicer.com/wiki/seam_calib");
+    bottom_sizer->Add(wiki, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(20));
+    bottom_sizer->AddStretchSpacer();
+    bottom_sizer->Add(dlg_btns, 0, wxEXPAND);
+    v_sizer->Add(bottom_sizer, 0, wxEXPAND);
+
+    dlg_btns->GetOK()->Bind(wxEVT_BUTTON, &SeamCalibration_Dlg::on_start, this);
+    m_rbTestType->Bind(wxEVT_COMMAND_RADIOBOX_SELECTED, &SeamCalibration_Dlg::on_test_type_changed, this);
+
+    // Fill fields with defaults for the initially selected test type
+    update_ui_visibility();
+
+    wxGetApp().UpdateDlgDarkUI(this);
+
+    Layout();
+    Fit();
+    v_sizer->SetSizeHints(this);
+}
+
+SeamCalibration_Dlg::~SeamCalibration_Dlg() {
+    // Disconnect Events
+}
+
+void SeamCalibration_Dlg::on_test_type_changed(wxCommandEvent& event) {
+    update_ui_visibility();
+    Refresh();
+}
+
+void SeamCalibration_Dlg::update_ui_visibility() {
+    int test_idx = m_rbTestType->GetSelection();
+    auto test = static_cast<Calib_Params::SeamCalibTest>(test_idx);
+
+    // Get nozzle diameter for computing seam_gap defaults as % of nozzle
+    const auto* preset_bundle = wxGetApp().preset_bundle;
+    double nozzle_diameter = 0.4;
+    if (preset_bundle) {
+        auto* printer_config = &preset_bundle->printers.get_edited_preset().config;
+        auto* opt = printer_config->option<ConfigOptionFloats>("nozzle_diameter");
+        if (opt && !opt->values.empty())
+            nozzle_diameter = opt->values[0];
+    }
+
+    if (test == Calib_Params::SeamCalibTest::Gap) {
+        // Seam Gap: start=0, end=15% of nozzle, step=1% of nozzle
+        double end_mm  = 0.15 * nozzle_diameter;
+        double step_mm = 0.01 * nozzle_diameter;
+        m_tiStart->GetTextCtrl()->SetValue(wxString::FromDouble(0.0));
+        m_tiEnd->GetTextCtrl()->SetValue(wxString::Format("%.2f", end_mm));
+        m_tiStep->GetTextCtrl()->SetValue(wxString::Format("%.3f", step_mm));
+    } else {
+        // Wipe Distance: start=0, end=2, step=0.2 (mm)
+        m_tiStart->GetTextCtrl()->SetValue(wxString::FromDouble(0.0));
+        m_tiEnd->GetTextCtrl()->SetValue(wxString::FromDouble(2.0));
+        m_tiStep->GetTextCtrl()->SetValue(wxString::FromDouble(0.2));
+    }
+    // Sample height stays at 1mm for both
+}
+
+void SeamCalibration_Dlg::reset_params() {
+    m_params = Calib_Params{};
+    m_params.mode = CalibMode::Calib_Seam;
+    m_params.seam_test = Calib_Params::SeamCalibTest::Gap;
+    m_params.seam_start         = 0.0;
+    m_params.seam_end           = 0.3;
+    m_params.seam_step          = 0.05;
+    m_params.seam_sample_height = 1.0;
+}
+
+void SeamCalibration_Dlg::on_start(wxCommandEvent& event) {
+    reset_params();
+
+    int test_idx = m_rbTestType->GetSelection();
+    m_params.seam_test = static_cast<Calib_Params::SeamCalibTest>(test_idx);
+
+    bool read_ok = true;
+    double start_val, end_val, step_val, sample_h;
+
+    read_ok = m_tiStart->GetTextCtrl()->GetValue().ToDouble(&start_val);
+    read_ok = read_ok && m_tiEnd->GetTextCtrl()->GetValue().ToDouble(&end_val);
+    read_ok = read_ok && m_tiStep->GetTextCtrl()->GetValue().ToDouble(&step_val);
+    read_ok = read_ok && m_tiSampleHeight->GetTextCtrl()->GetValue().ToDouble(&sample_h);
+
+    if (!read_ok || start_val < 0 || step_val <= 0 || end_val < (start_val + step_val) || sample_h <= 0) {
+        MessageDialog msg_dlg(nullptr, _L("Please input valid values:\nstart >= 0\nstep > 0\nend > start + step\nsample height > 0"), wxEmptyString, wxICON_WARNING | wxOK);
+        msg_dlg.ShowModal();
+        return;
+    }
+
+    m_params.seam_start         = start_val;
+    m_params.seam_end           = end_val;
+    m_params.seam_step          = step_val;
+    m_params.seam_sample_height = sample_h;
+
+    m_params.mode = CalibMode::Calib_Seam;
+    m_plater->calib_seam(m_params);
+    EndModal(wxID_OK);
+}
+
+void SeamCalibration_Dlg::on_dpi_changed(const wxRect& suggested_rect) {
+    this->Refresh();
+    Fit();
+}
+
 }} // namespace Slic3r::GUI

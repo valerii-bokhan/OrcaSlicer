@@ -199,5 +199,31 @@ protected:
     ComboBox* m_rbPattern;
     Plater* m_plater;
 };
+
+class SeamCalibration_Dlg : public DPIDialog
+{
+public:
+    SeamCalibration_Dlg(wxWindow* parent, wxWindowID id, Plater* plater);
+    ~SeamCalibration_Dlg();
+    void on_dpi_changed(const wxRect& suggested_rect) override;
+
+protected:
+    void on_start(wxCommandEvent& event);
+    void on_test_type_changed(wxCommandEvent& event);
+
+    void reset_params();
+    void update_ui_visibility();
+
+    Calib_Params m_params;
+
+    RadioGroup* m_rbTestType;
+    // Sweep parameters (shared by all test types — generic start/end/step)
+    TextInput* m_tiStart;
+    TextInput* m_tiEnd;
+    TextInput* m_tiStep;
+    TextInput* m_tiSampleHeight;
+
+    Plater* m_plater;
+};
 }} // namespace Slic3r::GUI
 #endif
