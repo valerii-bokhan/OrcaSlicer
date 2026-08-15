@@ -16566,6 +16566,123 @@ void Plater::Calib_Cornering(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(params);
 }
 
+void Plater::calib_seam(const Calib_Params& params)
+{
+    const auto calib_seam_name = wxString::Format(L"Seam Calibration");
+    new_project(false, false, calib_seam_name);
+    wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
+    if (params.mode != CalibMode::Calib_Seam)
+        return;
+
+    // Calculate total tower height from sweep parameters.
+    // Each sample band is seam_sample_height tall; the number of bands is
+    // determined by (end - start) / step + 1.
+    const int    num_samples = static_cast<int>(std::round((params.seam_end - params.seam_start) / params.seam_step)) + 1;
+    const double tower_height = num_samples * params.seam_sample_height;
+
+    // Create the two calibration models programmatically:
+    //  1. A 10×10×tower_height cube, rotated 45° around Z
+    //  2. A cylinder, radius 5mm, height = tower_height
+    // The two models are placed side by side with 10mm between their edges.
+
+    Model& m = model();
+
+    // --- Cube (parallelepiped), 10mm edge, rotated 45° ---
+    const double cube_side = 10.0;
+    TriangleMesh cube_mesh = make_cube(cube_side, cube_side, tower_height);
+    // Center the cube mesh at origin in XY, sitting on the bed (z=0)
+    cube_mesh.translate(-cube_side / 2.0, -cube_side / 2.0, 0.0);
+    ModelObject* cube_obj = m.add_object("Seam Cube", "", std::move(cube_mesh));
+    cube_obj->add_instance();
+    cube_obj->instances[0]->set_rotation(Z, Geometry::deg2rad(45.0));
+    // After rotation, the bounding box grows; we position it so its center sits
+    // at x = -(half of total layout width), y = 0.
+    // Layout: cube at left, cylinder at right, 10mm gap between their bounding-box edges.
+    // Cube bbox after 45° rotation: side * sqrt(2) ≈ 14.14mm
+    // Cylinder bbox diameter: 10mm (radius 5)
+    // Gap: 10mm
+    // Total width: 14.14 + 10 + 10 = 34.14mm, half = 17.07mm
+    const double cube_bbox = cube_side * std::sqrt(2.0);  // bounding box after 45° rotation
+    const double cyl_diameter = 10.0;
+    const double gap = 10.0;
+    const double total_width = cube_bbox + gap + cyl_diameter;
+    const double cube_center_x = -total_width / 2.0 + cube_bbox / 2.0;
+    const double cyl_center_x  =  total_width / 2.0 - cyl_diameter / 2.0;
+    cube_obj->instances[0]->set_offset(Vec3d(cube_center_x, 0.0, 0.0));
+    cube_obj->ensure_on_bed();
+    {
+        Geometry::Transformation t = cube_obj->instances[0]->get_transformation();
+        cube_obj->instances[0]->set_assemble_transformation(t);
+    }
+
+    // --- Cylinder, radius 5mm ---
+    const double cyl_radius = 5.0;
+    TriangleMesh cyl_mesh = make_cylinder(cyl_radius, tower_height);
+    // make_cylinder is already centered around Z; sitting on bed at z=0
+    ModelObject* cyl_obj = m.add_object("Seam Cylinder", "", std::move(cyl_mesh));
+    cyl_obj->add_instance();
+    cyl_obj->instances[0]->set_offset(Vec3d(cyl_center_x, 0.0, 0.0));
+    cyl_obj->ensure_on_bed();
+    {
+        Geometry::Transformation t = cyl_obj->instances[0]->get_transformation();
+        cyl_obj->instances[0]->set_assemble_transformation(t);
+    }
+
+    // Center the pair on the build plate
+    const Vec2d center = p->bed.build_volume().bed_center();
+    for (ModelObject* obj : m.objects) {
+        Vec3d offset = obj->instances[0]->get_offset();
+        offset.x() += center.x();
+        offset.y() += center.y();
+        obj->instances[0]->set_offset(offset);
+        obj->instances[0]->set_assemble_transformation(obj->instances[0]->get_transformation());
+    }
+
+    // --- Print / filament / printer config ---
+    auto print_config    = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    auto filament_config = &wxGetApp().preset_bundle->filaments.get_edited_preset().config;
+
+    // Seam visibility: 3 walls, no infill, no top/bottom shells
+    for (ModelObject* obj : m.objects) {
+        obj->config.set_key_value("wall_loops", new ConfigOptionInt(3));
+        obj->config.set_key_value("top_shell_layers", new ConfigOptionInt(0));
+        obj->config.set_key_value("bottom_shell_layers", new ConfigOptionInt(0));
+        obj->config.set_key_value("sparse_infill_density", new ConfigOptionPercent(0));
+        obj->config.set_key_value("seam_position", new ConfigOptionEnum<SeamPosition>(spRear));
+        obj->config.set_key_value("brim_type", new ConfigOptionEnum<BrimType>(btOuterOnly));
+        obj->config.set_key_value("overhang_reverse", new ConfigOptionBool(false));
+        obj->config.set_key_value("wall_generator", new ConfigOptionEnum<PerimeterGeneratorType>(PerimeterGeneratorType::Classic));
+    }
+
+    // Print-level settings
+    print_config->set_key_value("spiral_mode", new ConfigOptionBool(false));
+    print_config->set_key_value("detect_thin_wall", new ConfigOptionBool(false));
+    print_config->set_key_value("enable_wrapping_detection", new ConfigOptionBool(false));
+
+    // Apply the starting value of the swept parameter as the initial config value.
+    // GCode.cpp will override it per-layer via m_calib_config.
+    if (params.seam_test == Calib_Params::SeamCalibTest::Gap) {
+        print_config->set_key_value("seam_gap", new ConfigOptionFloatOrPercent(params.seam_start, false));
+    } else {
+        // WipeDistance — filament-level parameter
+        filament_config->set_key_value("wipe_distance", new ConfigOptionFloats{params.seam_start});
+    }
+
+    // Register the new objects in the UI object list so they are visible
+    // and their per-object settings can be edited.
+    for (size_t i = 0; i < m.objects.size(); ++i)
+        sidebar().obj_list()->add_object_to_list(i);
+
+    changed_objects({ 0, 1 });
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->update_dirty();
+    wxGetApp().get_tab(Preset::TYPE_PRINT)->reload_config();
+    wxGetApp().get_tab(Preset::TYPE_FILAMENT)->reload_config();
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+
+    p->background_process.fff_print()->set_calib_params(params);
+}
+
 BuildVolume_Type Plater::get_build_volume_type() const { return p->bed.get_build_volume_type(); }
 
 void Plater::import_zip_archive()

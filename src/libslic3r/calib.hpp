@@ -26,7 +26,8 @@ enum class CalibMode : int {
     Calib_Retraction_tower,
     Calib_Input_shaping_freq,
     Calib_Input_shaping_damp,
-    Calib_Cornering
+    Calib_Cornering,
+    Calib_Seam
 };
 
 enum class CalibState { Start = 0, Preset, Calibration, CoarseSave, FineCalibration, Save, Finish };
@@ -48,6 +49,17 @@ struct Calib_Params
     // Scale the calibration model to the nozzle diameter and set the layer height accordingly (temp tower / VFA).
     // When false the 0.4 mm / 0.2 mm reference model is printed as-is.
     bool nozzle_based_resize = true;
+
+    // Seam calibration parameters
+    enum class SeamCalibTest {
+        Gap          = 0, // Vary seam_gap to find the best gap that hides the seam
+        WipeDistance = 1  // Vary wipe_distance to reduce stringing/ooze at the seam
+    };
+    SeamCalibTest seam_test{SeamCalibTest::Gap};
+    double seam_start         = 0.0;  // mm — starting value of the swept parameter
+    double seam_end           = 0.3;  // mm — ending value
+    double seam_step          = 0.05; // mm — step between samples
+    double seam_sample_height = 1.0;  // mm — height of each sample band
 
     CalibMode mode;
 };

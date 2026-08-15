@@ -3469,6 +3469,15 @@ void MainFrame::init_menubar_as_editor()
         }, "", nullptr,
         [this]() {return m_plater->is_view3D_shown();; }, this);
 
+    // Seam
+    append_menu_item(m_topbar->GetCalibMenu(), wxID_ANY, _L("Seam"), _L("Seam Calibration"),
+        [this](wxCommandEvent&) {
+            if (!m_seam_calib_dlg)
+                m_seam_calib_dlg = new SeamCalibration_Dlg((wxWindow*)this, wxID_ANY, m_plater);
+            m_seam_calib_dlg->ShowModal();
+        }, "", nullptr,
+        [this]() {return m_plater->is_view3D_shown();; }, this);
+
     // Input Shaping (with submenu)
     auto input_shaping_menu = new wxMenu();
     append_menu_item(
