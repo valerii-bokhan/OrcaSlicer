@@ -61,7 +61,7 @@ public:
     bool enable;
     Polyline path;
 
-    // Orca:
+    // Orca: retraction portions emitted before, during, and after the wipe move.
     struct RetractionValues{
         double retraction_length_before_wipe = 0.;
         double retraction_length_during_wipe = 0.;
@@ -73,8 +73,10 @@ public:
     void reset_path() { this->path = Polyline(); }
     std::string wipe(GCode &gcodegen, double length, bool toolchange = false, bool is_last = false);
 
-    // Orca:
+    // Orca: calculate the retraction portions that can be emitted at wipe speed.
     RetractionValues calculateWipeRetractionLengths(GCode& gcodegen, bool toolchange);
+    // Orca: rebuild the stored path while deduplicating shared path boundaries.
+    void update_path(const ExtrusionPaths &paths, bool reverse = false);
 };
 
 class WipeTowerIntegration {
