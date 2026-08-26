@@ -848,6 +848,15 @@ struct SeamComparator {
     return penalty_a <= penalty_b || penalty_a - penalty_b < SeamPlacer::seam_align_score_tolerance;
   }
 
+  bool respects_seam_painting(const SeamCandidate &a, const SeamCandidate &b) const {
+    // Orca: EnforcedBlockedSeamPoint is ordered by priority. Keep a selected enforcer and never
+    // move onto a blocker while allowing a propagated seam to upgrade either choice.
+    if ((setup == SeamPosition::spAligned || setup == SeamPosition::spAlignedBack) && a.central_enforcer != b.central_enforcer) {
+      return a.central_enforcer;
+    }
+    return a.type != EnforcedBlockedSeamPoint::Blocked && a.type >= b.type;
+  }
+
   bool are_similar(const SeamCandidate &a, const SeamCandidate &b) const {
     return is_first_not_much_worse(a, b) && is_first_not_much_worse(b, a);
   }
@@ -1229,6 +1238,141 @@ std::vector<std::pair<size_t, size_t>> SeamPlacer::find_seam_string(const PrintO
   return seam_string;
 }
 
+// Orca: A candidate rejected while building a seam string can leave a visible gap next to an
+// otherwise aligned chain. Match the perimeter near the aligned position rather than near its
+// rejected seam, then propagate the trusted alignment through adjacent layers.
+size_t SeamPlacerImpl::propagate_seam_alignment(
+    std::vector<PrintObjectSeamData::LayerSeams> &layers, SeamPosition setup)
+{
+  const SeamComparator comparator { setup };
+  struct CandidateMatch {
+    size_t index;
+    float distance;
+  };
+  struct AnchorMatch {
+    Vec3f seam_position;
+    Vec3f final_position;
+    CandidateMatch candidate;
+  };
+  struct PendingAlignment {
+    Perimeter *perimeter;
+    size_t seam_index;
+    Vec3f final_position;
+  };
+
+  size_t aligned_count = 0;
+  std::vector<PendingAlignment> pending;
+  do {
+    pending.clear();
+    for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
+      PrintObjectSeamData::LayerSeams &layer = layers[layer_idx];
+      for (Perimeter &perimeter : layer.perimeters) {
+        if (perimeter.finalized || perimeter.start_index >= perimeter.end_index ||
+            perimeter.end_index > layer.points.size() ||
+            perimeter.seam_index < perimeter.start_index || perimeter.seam_index >= perimeter.end_index) {
+          continue;
+        }
+
+        const SeamCandidate &current_seam = layer.points[perimeter.seam_index];
+        const float max_distance = SeamPlacer::seam_align_tolerable_dist_factor * perimeter.flow_width;
+        const auto find_candidate = [&](const Vec3f &target) -> std::optional<CandidateMatch> {
+          std::optional<CandidateMatch> nearest;
+          for (size_t point_idx = perimeter.start_index; point_idx < perimeter.end_index; ++point_idx) {
+            const SeamCandidate &candidate = layer.points[point_idx];
+            const float distance = (candidate.position.head<2>() - target.head<2>()).norm();
+            // Orca: A trusted chain may cross local visibility or corner-score fluctuations, but it
+            // must still respect explicit seam painting.
+            if (distance <= max_distance && comparator.respects_seam_painting(candidate, current_seam) &&
+                (!nearest || distance < nearest->distance)) {
+              nearest = CandidateMatch {point_idx, distance};
+            }
+          }
+          return nearest;
+        };
+
+        const auto find_anchor = [&](const PrintObjectSeamData::LayerSeams &adjacent_layer)
+            -> std::optional<AnchorMatch> {
+          std::optional<AnchorMatch> nearest;
+          float nearest_distance = max_distance;
+          for (const Perimeter &anchor : adjacent_layer.perimeters) {
+            if (!anchor.finalized || anchor.seam_index < anchor.start_index ||
+                anchor.seam_index >= anchor.end_index || anchor.end_index > adjacent_layer.points.size()) {
+              continue;
+            }
+            // Orca: Match the physical perimeter points; a fitted seam position may intentionally
+            // lie off the contour and is only suitable as the final alignment target.
+            const Vec3f seam_position = adjacent_layer.points[anchor.seam_index].position;
+            Vec3f projected_position = seam_position;
+            projected_position.z() = current_seam.position.z();
+            const std::optional<CandidateMatch> candidate = find_candidate(projected_position);
+            if (candidate && candidate->distance <= nearest_distance) {
+              nearest = AnchorMatch {seam_position, anchor.final_seam_position, *candidate};
+              nearest_distance = candidate->distance;
+            }
+          }
+          return nearest;
+        };
+
+        const std::optional<AnchorMatch> previous = layer_idx > 0 ? find_anchor(layers[layer_idx - 1]) : std::nullopt;
+        const std::optional<AnchorMatch> next = layer_idx + 1 < layers.size() ? find_anchor(layers[layer_idx + 1]) : std::nullopt;
+        if (!previous && !next) {
+          continue;
+        }
+
+        Vec3f aligned_position;
+        std::optional<CandidateMatch> match;
+        // Orca: Two anchors close a gap using height-aware interpolation. A single anchor extends
+        // the fitted seam toward a chain end while the physical candidate keeps it on this contour.
+        if (previous && next) {
+          if ((previous->seam_position.head<2>() - next->seam_position.head<2>()).norm() > max_distance) {
+            continue;
+          }
+          const float z_span = next->final_position.z() - previous->final_position.z();
+          if (z_span <= EPSILON || current_seam.position.z() <= previous->final_position.z() ||
+              current_seam.position.z() >= next->final_position.z()) {
+            continue;
+          }
+          const float interpolation = (current_seam.position.z() - previous->final_position.z()) / z_span;
+          aligned_position = previous->final_position + interpolation * (next->final_position - previous->final_position);
+          const Vec3f seam_position = previous->seam_position + interpolation *
+                                      (next->seam_position - previous->seam_position);
+          match = find_candidate(seam_position);
+        } else {
+          const AnchorMatch &anchor = previous ? *previous : *next;
+          aligned_position = anchor.final_position;
+          aligned_position.z() = current_seam.position.z();
+          match = anchor.candidate;
+        }
+
+        if (!match) {
+          continue;
+        }
+
+        const SeamCandidate &candidate = layer.points[match->index];
+        float preserve_candidate = std::min(1.0f, std::pow(std::abs(candidate.local_ccw_angle) /
+                                                           SeamPlacer::sharp_angle_snapping_threshold, 3.0f));
+        if (candidate.type == EnforcedBlockedSeamPoint::Enforced) {
+          preserve_candidate = std::max(0.4f, preserve_candidate);
+        }
+        pending.push_back({&perimeter, match->index,
+                           preserve_candidate * candidate.position +
+                           (1.0f - preserve_candidate) * aligned_position});
+      }
+    }
+
+    // Orca: Apply a complete layer-to-layer wave at once, then repeat. Each wave extends the trusted
+    // chain by one adjacent layer and avoids making the result depend on traversal order.
+    for (const PendingAlignment &alignment : pending) {
+      alignment.perimeter->seam_index = alignment.seam_index;
+      alignment.perimeter->final_seam_position = alignment.final_position;
+      alignment.perimeter->finalized = true;
+    }
+    aligned_count += pending.size();
+  } while (!pending.empty());
+
+  return aligned_count;
+}
+
 // clusters already chosen seam points into strings across multiple layers, and then
 // aligns the strings via polynomial fit
 // Does not change the positions of the SeamCandidates themselves, instead stores
@@ -1257,7 +1401,7 @@ void SeamPlacer::align_seam_points(const PrintObject *po, const SeamPlacerImpl::
 #endif
 
   //gather vector of all seams on the print_object - pair of layer_index and seam__index within that layer
-  const std::vector<PrintObjectSeamData::LayerSeams> &layers = m_seam_per_object[po].layers;
+  std::vector<PrintObjectSeamData::LayerSeams> &layers = m_seam_per_object[po].layers;
   std::vector<std::pair<size_t, size_t>> seams;
   for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
     const std::vector<SeamCandidate> &layer_perimeter_points = layers[layer_idx].points;
@@ -1416,6 +1560,8 @@ void SeamPlacer::align_seam_points(const PrintObject *po, const SeamPlacerImpl::
 #endif
     }
   }
+
+  propagate_seam_alignment(layers, comparator.setup);
 
 #ifdef DEBUG_FILES
   fclose(clusters);

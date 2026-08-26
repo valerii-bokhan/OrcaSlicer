@@ -108,6 +108,15 @@ struct PrintObjectSeamData
   }
 };
 
+namespace SeamPlacerImpl {
+
+// Orca: Extend spline-aligned seam chains through compatible perimeters on adjacent layers.
+// Returns the number of additionally aligned perimeters.
+size_t propagate_seam_alignment(std::vector<PrintObjectSeamData::LayerSeams> &layers,
+                                SeamPosition setup);
+
+} // namespace SeamPlacerImpl
+
 class SeamPlacer {
 public:
   // Number of samples generated on the mesh. There are sqr_rays_per_sample_point*sqr_rays_per_sample_point rays casted from each samples
