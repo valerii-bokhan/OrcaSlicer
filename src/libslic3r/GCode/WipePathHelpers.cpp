@@ -342,24 +342,19 @@ static bool translated_wipe_path(Polyline &polyline, Point seam_start, Point sea
 
 static std::optional<double> wipe_path_support_score(
     const Polyline &polyline, Point wipe_start,
-    const Lines &target_perimeter_lines, const Lines &printed_perimeter_lines,
-    const Lines &current_perimeter_lines,
+    const AABBTreeLines::LinesDistancer<Line> &target_distancer,
+    const AABBTreeLines::LinesDistancer<Line> &all_support_distancer,
     double max_distance)
 {
-    if (polyline.points.size() < 2 || target_perimeter_lines.empty() || max_distance <= 0)
+    if (polyline.points.size() < 2 || target_distancer.get_lines().empty() || max_distance <= 0)
         return std::nullopt;
 
-    AABBTreeLines::LinesDistancer<Line> target_distancer(target_perimeter_lines);
     // Orca: require a local neighbour, not merely an earlier perimeter elsewhere in
     // the region. Two widths accommodate Arachne spacing and wipe_on_loops'
     // short move away from the seam without accepting a remote island.
     if (target_distancer.distance_from_lines<false>(wipe_start) >
         2. * max_distance + 4. * SCALED_EPSILON)
         return std::nullopt;
-
-    Lines all_support_lines = printed_perimeter_lines;
-    all_support_lines.insert(all_support_lines.end(), current_perimeter_lines.begin(), current_perimeter_lines.end());
-    AABBTreeLines::LinesDistancer<Line> all_support_distancer(std::move(all_support_lines));
 
     const auto is_supported = [max_distance](const Point &point, const AABBTreeLines::LinesDistancer<Line> &distancer) {
         // Orca: offset joins and closest-point projection involve several
@@ -576,9 +571,15 @@ bool wipe_path_is_supported(const Polyline &polyline, Point wipe_start,
                             const Lines &other_perimeter_lines, const Lines &current_perimeter_lines,
                             double max_distance)
 {
-    return wipe_path_support_score(polyline, wipe_start, other_perimeter_lines,
-                                   other_perimeter_lines, current_perimeter_lines,
-                                   max_distance).has_value();
+    if (other_perimeter_lines.empty())
+        return false;
+
+    AABBTreeLines::LinesDistancer<Line> target_distancer(other_perimeter_lines);
+    Lines all_support_lines = other_perimeter_lines;
+    all_support_lines.insert(all_support_lines.end(), current_perimeter_lines.begin(), current_perimeter_lines.end());
+    AABBTreeLines::LinesDistancer<Line> all_support_distancer(std::move(all_support_lines));
+    return wipe_path_support_score(
+        polyline, wipe_start, target_distancer, all_support_distancer, max_distance).has_value();
 }
 
 bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point seam_end, Point wipe_start,
@@ -607,7 +608,6 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     }
 
     AABBTreeLines::LinesDistancer<Line> support_distancer(*candidate_support_lines);
-    AABBTreeLines::LinesDistancer<Line> current_perimeter_distancer(current_perimeter_lines);
     const std::optional<Vec2d> support_offset = support_offset_at_start(
         polyline, seam_end, seam_start != seam_end,
         support_distancer, max_support_distance);
@@ -619,6 +619,14 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     if (effective_offset <= SCALED_EPSILON)
         return false;
     const Vec2d support_direction = toward_support / local_support_distance;
+
+    // Orca: every candidate is validated against the same generated geometry.
+    // Build these AABB trees once per loop instead of rebuilding them for each
+    // preferred, alternate, translated, direct, or reversed candidate.
+    Lines all_support_lines = printed_perimeter_lines;
+    all_support_lines.insert(all_support_lines.end(), current_perimeter_lines.begin(), current_perimeter_lines.end());
+    AABBTreeLines::LinesDistancer<Line> all_support_distancer(std::move(all_support_lines));
+    AABBTreeLines::LinesDistancer<Line> current_perimeter_distancer(current_perimeter_lines);
 
     // Orca: allow only the contact needed to leave the extrusion endpoint. A
     // connector that meets the current wall again is a seam-gap retrace, even
@@ -649,9 +657,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (backtracks_across_gap || ! material_side || ! connector_clear)
             return std::nullopt;
         const std::optional<double> score = wipe_path_support_score(
-            path, wipe_start, *candidate_support_lines,
-            printed_perimeter_lines, current_perimeter_lines,
-            max_support_distance);
+            path, wipe_start, support_distancer, all_support_distancer, max_support_distance);
         if (! score)
             return std::nullopt;
         const double path_length = executable_path_length(path, wipe_start);
