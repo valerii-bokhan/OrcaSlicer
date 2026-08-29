@@ -25349,11 +25349,6 @@ msgstr ""
 #~ msgid "Low-temperature filament (PLA/PETG/TPU) is loaded in the extruder. In order to avoid extruder clogging, it is not allowed to set the chamber temperature above 45℃."
 #~ msgstr "W ekstruzorze jest załadowany filament o niskiej temperaturze (PLA/PETG/TPU). Aby uniknąć zatkania ekstruzora, nie wolno ustawiać temperatury komory powyżej 45℃."
 
-#~ msgid ""
-#~ "Is it %s%% or %s %s?"
-#~ msgstr ""
-#~ "Czy to %s%% czy %s %s?"
-
 #~ msgid "Allow multiple materials on the same plate"
 #~ msgstr "Pozwól na kilka filamentów na tej samej płycie"
 
