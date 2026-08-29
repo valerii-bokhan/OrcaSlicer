@@ -350,10 +350,11 @@ static std::optional<double> wipe_path_support_score(
         return std::nullopt;
 
     // Orca: require a local neighbour, not merely an earlier perimeter elsewhere in
-    // the region. Two widths accommodate Arachne spacing and wipe_on_loops'
-    // short move away from the seam without accepting a remote island.
+    // the region. At a convex corner, an inner wall's miter is farther from the
+    // external seam than its normal wall spacing, so allow the same bounded miter
+    // reach as the offset construction without accepting a remote island.
     if (target_distancer.distance_from_lines<false>(wipe_start) >
-        2. * max_distance + 4. * SCALED_EPSILON)
+        miter_limit * max_distance + 4. * SCALED_EPSILON)
         return std::nullopt;
 
     const auto is_supported = [max_distance](const Point &point, const AABBTreeLines::LinesDistancer<Line> &distancer) {
