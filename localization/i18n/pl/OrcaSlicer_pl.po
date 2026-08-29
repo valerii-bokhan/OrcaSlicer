@@ -5450,13 +5450,9 @@ msgstr "Wartość %s jest spoza zakresu. Poprawny zakres wynosi od %d do %d."
 
 #, c-format, boost-format
 msgid ""
-"Is it %s%% or %s %s?\n"
-"YES for %s%%, \n"
-"NO for %s %s."
+"Is it %s%% or %s %s?"
 msgstr ""
-"Czy to %s%% czy %s %s?\n"
-"TAK dla %s%%,\n"
-"NIE dla %s %s."
+"Czy to %s%% czy %s %s?"
 
 #, boost-format
 msgid "Invalid input format. Expected vector of dimensions in the following format: \"%1%\""
@@ -25354,13 +25350,9 @@ msgstr ""
 #~ msgstr "W ekstruzorze jest załadowany filament o niskiej temperaturze (PLA/PETG/TPU). Aby uniknąć zatkania ekstruzora, nie wolno ustawiać temperatury komory powyżej 45℃."
 
 #~ msgid ""
-#~ "Is it %s%% or %s %s?\n"
-#~ "YES for %s%%,\n"
-#~ "NO for %s %s."
+#~ "Is it %s%% or %s %s?"
 #~ msgstr ""
-#~ "Czy to %s%% czy %s %s?\n"
-#~ "TAK dla %s%%,\n"
-#~ "NIE dla %s %s."
+#~ "Czy to %s%% czy %s %s?"
 
 #~ msgid "Allow multiple materials on the same plate"
 #~ msgstr "Pozwól na kilka filamentów na tej samej płycie"
