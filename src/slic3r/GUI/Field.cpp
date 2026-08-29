@@ -593,12 +593,11 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
 
                         const std::string sidetext = m_opt.sidetext.rfind("mm/s") != std::string::npos ? "mm/s" : "mm";
                         const wxString stVal       = double_to_string(val, 2);
-                        const wxString msg_text    = from_u8((boost::format(_utf8(L("Is it %s%% or %s %s?\n"
-                                                                                    "YES for %s%%, \n"
-                                                                                    "NO for %s %s."))) %
-                                                              stVal % stVal % sidetext % stVal % stVal % sidetext)
-                                                                 .str());
+                        const wxString msg_text    = from_u8((boost::format(_utf8(L("Is it %s%% or %s %s?"))) %
+                                                              stVal % stVal % sidetext).str());
                         WarningDialog dialog(m_parent, msg_text, _L("Parameter validation") + ": " + m_opt_id, wxYES | wxNO);
+                        dialog.SetButtonLabel(wxID_YES, stVal + _L("%"));
+                        dialog.SetButtonLabel(wxID_NO, stVal + " " + _L(sidetext));
                         is_percent = dialog.ShowModal() == wxID_YES;
                         numeric_str = stVal;
                         update_control = true;
