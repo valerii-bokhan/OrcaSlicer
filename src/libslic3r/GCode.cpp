@@ -567,7 +567,7 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
     // Orca: rebuild the stored wipe path while preserving Polyline's boundary deduplication.
     void Wipe::update_path(const ExtrusionPaths &paths, bool reverse)
     {
-        path.clear();
+        reset_path();
         for (const ExtrusionPath& extrusion_path : paths)
             path.append(extrusion_path.polyline.to_polyline());
         if (reverse)
@@ -7498,8 +7498,13 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
                         inward_path, seam_start, seam_end, wipe_start,
                         wipe_offset_direction(is_ccw, is_hole), offset_dist, max_wipe_length,
                         target_perimeter_lines, printed_perimeter_lines,
-                        m_wipe.path.lines(), support_distance))
+                        m_wipe.path.lines(), support_distance)) {
                     m_wipe.path = std::move(inward_path);
+                    // Orca: a short move to the remaining inner wall would normally
+                    // discard this deferred wipe. Force its retraction now so seam
+                    // placement cannot decide whether wipe_inward is honored.
+                    m_wipe.require_retraction();
+                }
             }
         }
     }
@@ -7575,6 +7580,7 @@ std::string GCode::extrude_path(const ExtrusionPath& path, const std::string& de
     //    description += ExtrusionEntity::role_to_string(path.role());
     std::string gcode = this->_extrude(path, description, speed);
     if (m_wipe.enable && FILAMENT_CONFIG(wipe)) {
+        m_wipe.reset_path();
         m_wipe.path = path.polyline.to_polyline();
         if (is_tree(this->config().support_type) && is_support(path.role())) {
             if ((m_wipe.path.first_point() - m_wipe.path.last_point()).cast<double>().norm() > scale_(0.2)) {
@@ -9058,7 +9064,11 @@ LiftType GCode::to_lift_type(ZHopType z_hop_types) {
 
 bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftType& lift_type)
 {
-    if (travel.length() < scale_(FILAMENT_CONFIG(retraction_minimum_travel))) {
+    // Orca: an inward external-wall wipe is otherwise discarded by the short
+    // travel to a remaining inner wall. Let it continue through the normal
+    // external-perimeter retraction path, which also selects the proper lift type.
+    if (travel.length() < scale_(FILAMENT_CONFIG(retraction_minimum_travel)) &&
+        ! m_wipe.requires_retraction()) {
         // skip retraction if the move is shorter than the configured threshold
         return false;
     }
