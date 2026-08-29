@@ -1,5 +1,6 @@
 #include <catch2/catch_all.hpp>
 
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,7 +22,8 @@ DynamicPrintConfig wipe_config(const char *wall_generator, bool wipe_inward,
                                const char *wall_loops = "2",
                                const char *wall_sequence = "inner wall/outer wall",
                                bool alternate_extra_wall = false,
-                               const char *sparse_infill_density = "0%")
+                               const char *sparse_infill_density = "0%",
+                               const char *seam_position = "aligned")
 {
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
     config.set_deserialize_strict({
@@ -36,7 +38,7 @@ DynamicPrintConfig wipe_config(const char *wall_generator, bool wipe_inward,
         { "top_shell_layers",            "0" },
         { "bottom_shell_layers",         "0" },
         { "sparse_infill_density",       sparse_infill_density },
-        { "seam_position",               "aligned" },
+        { "seam_position",               seam_position },
         { "seam_gap",                    seam_gap },
         { "wipe",                        "1" },
         { "wipe_distance",               "2" },
@@ -55,6 +57,7 @@ DynamicPrintConfig wipe_config(const char *wall_generator, bool wipe_inward,
 
 struct WipeTrajectory {
     Vec2d start;
+    double z;
     std::vector<Vec2d> destinations;
 };
 
@@ -70,7 +73,7 @@ std::vector<WipeTrajectory> wipe_trajectories(const std::string &gcode)
         const std::string_view comment = line.comment();
         if (comment.find(start_tag) != std::string_view::npos) {
             in_wipe = true;
-            trajectories.push_back({Vec2d(self.x(), self.y()), {}});
+            trajectories.push_back({Vec2d(self.x(), self.y()), self.z(), {}});
             return;
         }
         if (comment.find(end_tag) != std::string_view::npos) {
@@ -142,6 +145,35 @@ TEST_CASE("Inward wipe keeps its offset when seam gap is zero", "[Wipe][Regressi
     REQUIRE_FALSE(regular.empty());
     REQUIRE_FALSE(inward.empty());
     REQUIRE(trajectories_differ(regular, inward));
+}
+
+TEST_CASE("Inward wipe is retained across layers with a back seam", "[Wipe][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    const DynamicPrintConfig inward_config = wipe_config(
+        wall_generator, true, "50%", "0%", false, "3", "inner-outer-inner wall", false, "0%", "back");
+    const std::vector<WipeTrajectory> inward = wipe_trajectories(slice({make_cube(27., 27., 1.)}, inward_config));
+
+    REQUIRE_FALSE(inward.empty());
+    std::map<double, bool> inward_wipe_by_layer;
+    for (const WipeTrajectory &trajectory : inward) {
+        bool &has_inward_wipe = inward_wipe_by_layer[trajectory.z];
+        if (trajectory.destinations.empty())
+            continue;
+        const Vec2d first_move = trajectory.destinations.front() - trajectory.start;
+        // Orca: a back seam lands on the cube's positive-X/positive-Y corner.
+        // Its inward wipe must move diagonally away from both external faces.
+        has_inward_wipe = has_inward_wipe ||
+            (trajectory.start.x() > 13. && trajectory.start.y() > 13. &&
+             first_move.x() < -0.05 && first_move.y() < -0.05);
+    }
+    REQUIRE(inward_wipe_by_layer.size() == 5);
+    for (const auto &[z, has_inward_wipe] : inward_wipe_by_layer) {
+        INFO("layer Z: " << z);
+        REQUIRE(has_inward_wipe);
+    }
 }
 
 TEST_CASE("Literal inward wipe distance is clamped to the outer wall width", "[Wipe][Regression]")
