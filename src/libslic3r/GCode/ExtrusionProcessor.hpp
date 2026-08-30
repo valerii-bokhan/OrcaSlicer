@@ -617,15 +617,20 @@ public:
             }
         }
         
-        // Orca: Find the smallest overhang distance where speed adjustments begin
+        // Only the mild-overhang curve starts at the supported boundary. Preserve the legacy
+        // threshold and speed calculation when that curve is disabled.
+        const bool starts_at_supported_boundary = speed_sections.front().first <= EPSILON;
+        const float supported_distance_tolerance = starts_at_supported_boundary ? path.width * 0.001f : 0.f;
         float smallest_distance_with_lower_speed = std::numeric_limits<float>::infinity(); // Initialize to a large value
         bool found = false;
-        for (const auto& section : speed_sections) {
+        for (size_t i = starts_at_supported_boundary ? 1 : 0; i < speed_sections.size() && !found; ++i) {
+            const auto &section = speed_sections[i];
             if (section.second <= original_speed) {
-                if (section.first < smallest_distance_with_lower_speed) {
-                    smallest_distance_with_lower_speed = section.first;
-                    found = true;
-                }
+                // Interpolation begins at the preceding point. Sampling requires a positive
+                // threshold even when this point is at zero unsupported width.
+                smallest_distance_with_lower_speed = starts_at_supported_boundary && section.second < original_speed - 1.f ?
+                    std::max(speed_sections[i - 1].first, supported_distance_tolerance) : section.first;
+                found = true;
             }
         }
 
@@ -634,9 +639,9 @@ public:
             smallest_distance_with_lower_speed=-1.f;
 
         // Orca: Pass to the point properties estimator the smallest ovehang distance that triggers a slowdown (smallest_distance_with_lower_speed)
-        auto calculate_speed = [&speed_sections, &original_speed](float distance) {
+        auto calculate_speed = [&speed_sections, &original_speed, supported_distance_tolerance](float distance) {
             float final_speed;
-            if (distance <= speed_sections.front().first) {
+            if (distance <= speed_sections.front().first + supported_distance_tolerance) {
                 final_speed = original_speed;
             } else if (distance >= speed_sections.back().first) {
                 final_speed = speed_sections.back().second;
