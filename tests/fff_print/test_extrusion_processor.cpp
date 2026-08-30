@@ -2,6 +2,7 @@
 
 #include "libslic3r/AABBTreeLines.hpp"
 #include "libslic3r/GCode/ExtrusionProcessor.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
@@ -9,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -284,6 +286,90 @@ std::string caged_overhang_gcode(const char* wall_generator)
     return gcode(print);
 }
 
+constexpr double shallow_layer_height = 0.02;
+constexpr double shallow_wall_width = 0.23;
+constexpr double shallow_outer_wall_speed = 60.;
+constexpr double shallow_overhang_speed = 30.;
+
+// A 10 x 10 x 1mm prism whose front face moves outwards by top_offset over its height,
+// while the back face remains vertical and fully supported.
+TriangleMesh shallow_overhang_mesh(double top_offset = 0.5)
+{
+    const float top_y = -float(top_offset);
+    return TriangleMesh(
+        {
+            {0.f, 0.f, 0.f},    {10.f, 0.f, 0.f},   {10.f, 10.f, 0.f}, {0.f, 10.f, 0.f},
+            {0.f, top_y, 1.f},  {10.f, top_y, 1.f}, {10.f, 10.f, 1.f}, {0.f, 10.f, 1.f},
+        },
+        {
+            {0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7},
+            {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+            {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7},
+        });
+}
+
+// Orca: Let the fixture independently toggle speed handling and optional preview metadata.
+DynamicPrintConfig shallow_overhang_config(const char *wall_generator, double mild_overhang_speed,
+                                         bool enable_overhang_speed, bool gcode_overhangs)
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        {"nozzle_diameter", "0.2"},
+        {"initial_layer_print_height", shallow_layer_height},
+        {"layer_height", shallow_layer_height},
+        {"line_width", shallow_wall_width},
+        {"outer_wall_line_width", shallow_wall_width},
+        {"inner_wall_line_width", shallow_wall_width},
+        {"wall_loops", "1"},
+        {"wall_generator", wall_generator},
+        {"sparse_infill_density", "0%"},
+        {"top_shell_layers", "1"},
+        {"bottom_shell_layers", "1"},
+        {"detect_overhang_wall", "1"},
+        {"enable_overhang_speed", enable_overhang_speed ? "1" : "0"},
+        {"gcode_overhangs", gcode_overhangs ? "1" : "0"},
+        {"slowdown_for_curled_perimeters", "0"},
+        {"zaa_enabled", "0"},
+        {"outer_wall_speed", shallow_outer_wall_speed},
+        {"inner_wall_speed", shallow_outer_wall_speed},
+        {"overhang_1_4_speed", mild_overhang_speed},
+        {"overhang_2_4_speed", "0"},
+        {"overhang_3_4_speed", "0"},
+        {"overhang_4_4_speed", "0"},
+        {"filament_max_volumetric_speed", "5"},
+        {"slow_down_for_layer_cooling", "0"},
+        {"slow_down_layers", "0"},
+    });
+
+    return config;
+}
+
+std::string shallow_overhang_gcode(const char *wall_generator, double mild_overhang_speed, double top_offset = 0.5,
+                                  bool enable_overhang_speed = true, bool gcode_overhangs = false)
+{
+    DynamicPrintConfig config = shallow_overhang_config(wall_generator, mild_overhang_speed, enable_overhang_speed, gcode_overhangs);
+    Print print;
+    Model model;
+    init_print({shallow_overhang_mesh(top_offset)}, print, model, config, nullptr, false);
+    return gcode(print);
+}
+
+// Orca: Extract every emitted percentage without coupling the regression test to G-code line positions.
+std::vector<float> overhang_percentages(const std::string &gcode)
+{
+    std::vector<float> percentages;
+    size_t position = 0;
+    while ((position = gcode.find("OVERHANG:", position)) != std::string::npos) {
+        position += sizeof("OVERHANG:") - 1;
+        char *end = nullptr;
+        const float percentage = std::strtof(gcode.c_str() + position, &end);
+        if (end != gcode.c_str() + position)
+            percentages.push_back(percentage);
+        position = end != gcode.c_str() + position ? size_t(end - gcode.c_str()) : position;
+    }
+    return percentages;
+}
+
 // Reports the matched move count alongside the extremes, so a filter that selected nothing is
 // distinguishable from a span that simply was not slowed.
 void info_feed_rates(const char* span, const std::vector<double>& feed_rates)
@@ -296,6 +382,22 @@ void info_feed_rates(const char* span, const std::vector<double>& feed_rates)
 }
 
 } // namespace
+
+TEST_CASE("Overhang metadata availability follows valid G-code tags", "[GCodeProcessor][Overhang]")
+{
+    // Orca: Drive the streaming parser used for freshly generated G-code and verify that only a
+    // valid tag advertises the optional preview mode.
+    GCodeProcessor processor;
+    const std::string tag_prefix = GCodeProcessor::s_IsBBLPrinter ? "; OVERHANG: " : ";OVERHANG:";
+    processor.process_buffer(tag_prefix + "37.5\n");
+    CHECK(processor.get_result().has_overhang_metadata);
+
+    // Orca: Resetting the processor must hide the mode again until another valid tag is parsed.
+    processor.reset();
+    CHECK_FALSE(processor.get_result().has_overhang_metadata);
+    processor.process_buffer(tag_prefix + "invalid\n");
+    CHECK_FALSE(processor.get_result().has_overhang_metadata);
+}
 
 // Classic reproduces the endpoint-sampling bug: it emits the span as one long move whose endpoints
 // both read as supported, so endpoint-only sampling never slows it. Arachne's endpoints already read
@@ -334,6 +436,25 @@ TEST_CASE("Supported vertical walls keep their normal speed", "[ExtrusionProcess
 
     const double slowest = *std::min_element(feed_rates.begin(), feed_rates.end());
     REQUIRE(slowest >= caged_slow_speed * MM_PER_MIN);
+}
+
+// Orca: Cover both the default size-preserving path and metadata generation without speed slowdown.
+TEST_CASE("Overhang preview metadata is optional and independent of overhang speed",
+          "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::vector<float> disabled_percentages = overhang_percentages(
+        shallow_overhang_gcode(wall_generator, shallow_overhang_speed, ten_percent_top_offset, false, false));
+    const std::vector<float> percentages = overhang_percentages(
+        shallow_overhang_gcode(wall_generator, shallow_overhang_speed, ten_percent_top_offset, false, true));
+
+    REQUIRE(disabled_percentages.empty());
+    REQUIRE_FALSE(percentages.empty());
+    REQUIRE(std::all_of(percentages.begin(), percentages.end(), [](float percentage) { return percentage >= 0.f && percentage <= 100.f; }));
+    REQUIRE(std::any_of(percentages.begin(), percentages.end(), [](float percentage) { return std::abs(percentage - 10.f) <= 0.2f; }));
 }
 
 // The slope's top edge falls mid layer, so the first layer above it still stands 0.179mm proud of the layer
