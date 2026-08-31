@@ -116,6 +116,7 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
             case coFloats: change_opt_key<ConfigOptionFloats>(opt_key, config, cnt); break;
             case coStrings: change_opt_key<ConfigOptionStrings>(opt_key, config, cnt); break;
             case coPercents: change_opt_key<ConfigOptionPercents>(opt_key, config, cnt); break;
+            case coFloatsOrPercents: change_opt_key<ConfigOptionVector<FloatOrPercent>>(opt_key, config, cnt); break;
             case coPoints: change_opt_key<ConfigOptionPoints>(opt_key, config, cnt); break;
             // BBS
             case coEnums: change_opt_key<ConfigOptionInts>(opt_key, config, cnt); break;
@@ -352,11 +353,20 @@ const Option &OptionsSearcher::get_option(const std::string &opt_key, Preset::Ty
             variant_index = -2; // Not found
             return options[0];
         }
-        auto it2 = it;
-        ++it2;
-        if (it2 != options.end() && it2->opt_key().compare(0, opt_key3.length(), opt_key3) == 0
-                && printer_options_with_variant_1.find(opt_key2) == printer_options_with_variant_1.end())
-            variant_index = -2;
+        // Orca: A vector index is not necessarily an extruder variant (for example, nozzle_diameter).
+        const bool has_variant =
+            (type == Preset::TYPE_PRINT && print_options_with_variant.count(opt_key2) > 0) ||
+            (type == Preset::TYPE_FILAMENT && filament_options_with_variant.count(opt_key2) > 0) ||
+            (type == Preset::TYPE_PRINTER &&
+             (printer_options_with_variant_1.count(opt_key2) > 0 || printer_options_with_variant_2.count(opt_key2) > 0));
+        if (!has_variant) {
+            it = std::lower_bound(it, options.end(), Option({boost::nowide::widen(get_key(opt_key, type))}));
+            if (it == options.end() || it->key != boost::nowide::widen(get_key(opt_key, type))) {
+                variant_index = -2;
+                return options[0];
+            }
+            variant_index = -1;
+        }
     }
 
     return options[it - options.begin()];
