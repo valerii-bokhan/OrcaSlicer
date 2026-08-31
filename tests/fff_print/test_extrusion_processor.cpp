@@ -555,8 +555,11 @@ TEST_CASE("Overhang arc profiles preserve interior peaks on short arcs", "[GCode
 // an arc or carry a previous profile across an intervening command or a parser reset.
 TEST_CASE("Overhang arc profiles reject invalid chunks and stale associations", "[GCodeProcessor][Overhang][ArcFitting][Regression]")
 {
+    // Orca: Empty headers and samples must be invalid with both std::from_chars and the legacy
+    // floating-point backend used by older macOS standard libraries, not silently become zero.
     const std::string data = GENERATE("", "3", "3,0", "1,0,0", "65537,0,0", "3,-1,0", "3,1,50,100", "3,0,0,nan,100", "3,0,0,inf,100",
         "3,0,0,101,100", "3,0,0,-1,100", "3,0,0,50,100junk", "3,0,0,50,100,", "3,0,0,50", "3,0,0,,100",
+        ",0,0,50,100", "3,,0,50,100", "3,0,,50,100",
         "3,0,0,50,100,0", "3,0,0,50,100\nM400", "3,0,0,50,100\nG2 X1 Y1 E1");
     CAPTURE(data);
     GCodeProcessor processor;
@@ -605,7 +608,8 @@ TEST_CASE("Overhang metadata availability follows valid G-code tags", "[GCodePro
 // Orca: Malformed or non-finite percentages must neither enable the view nor leak into its color lookup.
 TEST_CASE("Overhang percentages reject malformed and non-finite metadata", "[GCodeProcessor][Overhang][Regression]")
 {
-    const std::string value = GENERATE("nan", "inf", "-inf", "37.5garbage", "invalid");
+    // Orca: An empty scalar tag must not advertise metadata, just like an empty arc sample.
+    const std::string value = GENERATE("", "nan", "inf", "-inf", "37.5garbage", "invalid");
     const bool preceding_valid_tag = GENERATE(false, true);
     CAPTURE(value, preceding_valid_tag);
     GCodeProcessor processor;
