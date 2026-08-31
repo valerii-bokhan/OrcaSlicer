@@ -410,6 +410,8 @@ TEST_CASE("Overhang arc samples follow fitted geometry in both directions", "[Ex
     PrintObject *object = print.get_object(0);
     Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
     Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    // Orca: Mirror the support-layer link normally established by slicing.
+    upper->lower_layer = lower;
     lower->lslices = {ExPolygon(Polygon{Point::new_scale(-20, -20), Point::new_scale(7, -20),
         Point::new_scale(7, 20), Point::new_scale(-20, 20)})};
     ExtrusionQualityEstimator estimator;
@@ -454,6 +456,8 @@ TEST_CASE("Fitted arc correction preserves small real overhangs and supported in
     PrintObject *object = print.get_object(0);
     Layer *lower = object->add_layer(0, 0.02, 0.02, 0.01);
     Layer *upper = object->add_layer(1, 0.02, 0.04, 0.03);
+    // Orca: Mirror the support-layer link normally established by slicing.
+    upper->lower_layer = lower;
     lower->lslices = {contour(radius - shift)};
     upper->lslices = {contour(radius)};
     ExtrusionQualityEstimator estimator;
@@ -627,6 +631,8 @@ TEST_CASE("Overhang metadata detects unsupported interiors without changing the 
     PrintObject *object = print.get_object(0);
     Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
     Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    // Orca: Mirror the support-layer link normally established by slicing.
+    upper->lower_layer = lower;
     lower->lslices = {ExPolygon(Slic3r::Polygon{
         Point::new_scale(0, 0), Point::new_scale(pocket_start, 0),
         Point::new_scale(pocket_start, 0.2), Point::new_scale(pocket_start + 4, 0.2),
@@ -656,6 +662,8 @@ TEST_CASE("Overhang geometry is independent of curled edge slowdown", "[Extrusio
     PrintObject *object = print.get_object(0);
     Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
     Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    // Orca: Mirror the support-layer link normally established by slicing.
+    upper->lower_layer = lower;
     lower->lslices = {ExPolygon(Slic3r::Polygon{Point::new_scale(0, 0), Point::new_scale(40, 0),
         Point::new_scale(40, 10), Point::new_scale(0, 10)})};
     lower->curled_lines = {CurledLine(Point::new_scale(1, 0.2), Point::new_scale(39, 0.2), 1.0f)};
@@ -675,6 +683,52 @@ TEST_CASE("Overhang geometry is independent of curled edge slowdown", "[Extrusio
         CHECK_THAT(point.overhang_percentage, Catch::Matchers::WithinAbs(0.0, 1e-3));
 }
 
+// Orca: A freshly enabled estimator and one resuming after a gap must see the same geometry and
+// curled edges as a continuously prepared estimator, including when a layer is prepared twice.
+TEST_CASE("Overhang estimation restores the immediate support layer after skipped preparation", "[ExtrusionProcessor][Overhang][Regression]")
+{
+    const int prepared_count = GENERATE(0, 1, 2);
+    CAPTURE(prepared_count);
+    Print print;
+    Model model;
+    init_print({cube(1.0)}, print, model);
+    PrintObject *object = print.get_object(0);
+    Layer *older = object->add_layer(0, 0.2, 0.2, 0.1);
+    Layer *lower = object->add_layer(1, 0.2, 0.4, 0.3);
+    Layer *upper = object->add_layer(2, 0.2, 0.6, 0.5);
+    lower->lower_layer = older;
+    upper->lower_layer = lower;
+    // Orca: The stale contour cannot support the wall, whereas the actual lower layer supports it
+    // fully but has a curled edge. Both caches must therefore be restored, independently of metadata.
+    older->lslices = {ExPolygon(Polygon{Point::new_scale(0, 1), Point::new_scale(40, 1),
+        Point::new_scale(40, 10), Point::new_scale(0, 10)})};
+    lower->lslices = {ExPolygon(Polygon{Point::new_scale(0, 0), Point::new_scale(40, 0),
+        Point::new_scale(40, 10), Point::new_scale(0, 10)})};
+    lower->curled_lines = {CurledLine(Point::new_scale(1, 0.2), Point::new_scale(39, 0.2), 1.0f)};
+    ExtrusionQualityEstimator estimator;
+    estimator.set_current_object(object);
+    if (prepared_count >= 1)
+        estimator.prepare_for_new_layer(object, older);
+    if (prepared_count >= 2)
+        estimator.prepare_for_new_layer(object, lower);
+    ExtrusionPath path(erExternalPerimeter, 0.08, 0.4f, 0.2f);
+    path.polyline.points = {Point3::new_scale(1, 0.2, 0), Point3::new_scale(39, 0.2, 0)};
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        CAPTURE(attempt);
+        estimator.prepare_for_new_layer(object, upper);
+        const auto percentages = estimator.estimate_overhang_percentages(path);
+        REQUIRE(percentages.size() == 1);
+        CHECK_THAT(percentages.front(), Catch::Matchers::WithinAbs(0.0, 1e-3));
+        const auto points = estimator.estimate_extrusion_quality(path, ConfigOptionPercents({100, 0}),
+            ConfigOptionFloatsOrPercents({FloatOrPercent{100, false}, FloatOrPercent{20, false}}),
+            100.0f, 100.0f, true);
+        REQUIRE(points.size() >= 2);
+        CHECK(points.front().speed < 99.0f);
+        CHECK(points.front().overlap < 0.99f);
+        CHECK_THAT(points.front().overhang_percentage, Catch::Matchers::WithinAbs(0.0, 1e-3));
+    }
+}
+
 // Orca: Metadata may add comments, but neither fixed-speed nor variable-speed export may change a
 // printer command. This includes extrusion amounts, feed rates, cooling and acceleration commands.
 TEST_CASE("Overhang metadata leaves printer commands unchanged", "[ExtrusionProcessor][Overhang][Regression]")
@@ -686,6 +740,46 @@ TEST_CASE("Overhang metadata leaves printer commands unchanged", "[ExtrusionProc
     REQUIRE_FALSE(overhang_percentages(with_metadata).empty());
     REQUIRE(overhang_percentages(without_metadata).empty());
     CHECK(printer_commands(with_metadata) == printer_commands(without_metadata));
+}
+
+// Orca: Height modifiers can first enable slowdown or interrupt it for several layers. In both
+// directions, toggling preview metadata must preserve every printer command, including speeds.
+TEST_CASE("Overhang metadata preserves printer commands across height modifier transitions", "[ExtrusionProcessor][Overhang][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const bool initial_slowdown = GENERATE(false, true);
+    CAPTURE(wall_generator, initial_slowdown);
+    std::vector<std::string> baseline_commands;
+    for (bool enabled : {false, true}) {
+        CAPTURE(enabled);
+        DynamicPrintConfig config = shallow_overhang_config(wall_generator, 20.0, initial_slowdown, enabled);
+        // Orca: Disable overhang cooling so it cannot populate the cache while slowdown is disabled.
+        config.set_deserialize_strict("enable_overhang_bridge_fan", "0");
+        Print print;
+        Model model;
+        init_print({shallow_overhang_mesh()}, print, model, config, nullptr, false);
+        DynamicPrintConfig range_config;
+        range_config.set_key_value("layer_height", new ConfigOptionFloat(shallow_layer_height));
+        range_config.set_deserialize_strict("enable_overhang_speed", initial_slowdown ? "0" : "1");
+        model.objects.front()->layer_config_ranges[{0.3, 0.7}].assign_config(std::move(range_config));
+        print.apply(model, config);
+        const std::string exported = gcode(print);
+        CHECK(overhang_percentages(exported).empty() == !enabled);
+        // Orca: Equality alone could accept identical stale caches. The vertical back wall must also
+        // retain its configured speed on the first layer after each transition, not a false slowdown.
+        const auto supported_speeds = shallow_face_feed_rates(exported, false);
+        REQUIRE_FALSE(supported_speeds.empty());
+        for (double feed_rate : supported_speeds)
+            CHECK_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed, 0.1));
+        const auto commands = printer_commands(exported);
+        REQUIRE_FALSE(commands.empty());
+        if (!enabled)
+            baseline_commands = commands;
+        else {
+            CHECK(commands.size() == baseline_commands.size());
+            CHECK(std::equal(commands.begin(), commands.end(), baseline_commands.begin(), baseline_commands.end()));
+        }
+    }
 }
 
 // Orca: A sheared cylinder has fitted circular walls with support changing along each layer.
