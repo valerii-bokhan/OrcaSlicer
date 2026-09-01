@@ -1441,6 +1441,12 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
         Vec2d val = config.opt<ConfigOptionPoints>(opt_key)->get_at(opt_idx);
         return from_u8((boost::format("[%1%]") % ConfigOptionPoint(val).serialize()).str());
     }
+    case coPointsGroups: {
+        const ConfigOptionPointsGroups* values = config.opt<ConfigOptionPointsGroups>(opt_key);
+        if (values && opt_idx < values->size())
+            return from_u8(values->vserialize()[opt_idx]);
+        return _L("Undefined");
+    }
     default:
         break;
     }
