@@ -118,6 +118,7 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
             case coPercents: change_opt_key<ConfigOptionPercents>(opt_key, config, cnt); break;
             case coFloatsOrPercents: change_opt_key<ConfigOptionVector<FloatOrPercent>>(opt_key, config, cnt); break;
             case coPoints: change_opt_key<ConfigOptionPoints>(opt_key, config, cnt); break;
+            case coPointsGroups: change_opt_key<ConfigOptionPointsGroups>(opt_key, config, cnt); break;
             // BBS
             case coEnums: change_opt_key<ConfigOptionInts>(opt_key, config, cnt); break;
             default: break;
