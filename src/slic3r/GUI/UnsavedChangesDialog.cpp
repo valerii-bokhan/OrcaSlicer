@@ -1806,7 +1806,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
             if (variant_index >= 0) {
                 if (printer_options_with_variant_2.count(opt_key.substr(0, opt_key.find_last_of('#'))) > 0) {
                     const wxString mode = variant_index % 2 == 0 ? _L("Normal") : _L("Silent");
-                    option_label += wxString(" (") + mode + ")";
+                    option_label = wxString("[") + mode + "] " + option_label;
                     variant_index /= 2;
                 }
                 if (boost::nowide::narrow(category).find("Extruder ") == 0)
