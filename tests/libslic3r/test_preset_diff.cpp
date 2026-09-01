@@ -33,3 +33,27 @@ TEST_CASE("deep_diff flags new vector entries that duplicate values[0]", "[Prese
     // specific to new indices rather than flagging the whole vector.
     REQUIRE(std::find(diff.begin(), diff.end(), "nozzle_diameter#0") == diff.end());
 }
+
+TEST_CASE("deep_diff identifies the changed extruder printable area", "[PresetDiff][Config]")
+{
+    const Vec2ds left_area{
+        Vec2d(0., 0.), Vec2d(100., 0.), Vec2d(100., 100.), Vec2d(0., 100.)};
+    const Vec2ds right_area{
+        Vec2d(100., 0.), Vec2d(200., 0.), Vec2d(200., 100.), Vec2d(100., 100.)};
+    Vec2ds edited_right_area = right_area;
+    edited_right_area[2] = Vec2d(210., 100.);
+
+    Preset reference(Preset::TYPE_PRINTER, "ref");
+    reference.config.set_key_value(
+        "extruder_printable_area", new ConfigOptionPointsGroups{left_area, right_area});
+
+    Preset edited(Preset::TYPE_PRINTER, "edited");
+    edited.config.set_key_value(
+        "extruder_printable_area", new ConfigOptionPointsGroups{left_area, edited_right_area});
+
+    const std::vector<std::string> diff =
+        PresetCollection::dirty_options(&edited, &reference, /*deep_compare=*/true);
+
+    REQUIRE(std::find(diff.begin(), diff.end(), "extruder_printable_area#0") == diff.end());
+    REQUIRE(std::find(diff.begin(), diff.end(), "extruder_printable_area#1") != diff.end());
+}
