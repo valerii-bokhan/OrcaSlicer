@@ -359,7 +359,13 @@ const Option &OptionsSearcher::get_option(const std::string &opt_key, Preset::Ty
             (type == Preset::TYPE_FILAMENT && filament_options_with_variant.count(opt_key2) > 0) ||
             (type == Preset::TYPE_PRINTER &&
              (printer_options_with_variant_1.count(opt_key2) > 0 || printer_options_with_variant_2.count(opt_key2) > 0));
-        if (!has_variant) {
+        if (type == Preset::TYPE_PRINTER && printer_options_with_variant_2.count(opt_key2) > 0 && variant_index >= 0) {
+            const std::string mode_key = opt_key2 + "#" + std::to_string(variant_index % 2);
+            const std::wstring search_key = boost::nowide::widen(get_key(mode_key, type));
+            auto mode_it = std::lower_bound(it, options.end(), Option({search_key}));
+            if (mode_it != options.end() && mode_it->key == search_key)
+                it = mode_it;
+        } else if (!has_variant) {
             it = std::lower_bound(it, options.end(), Option({boost::nowide::widen(get_key(opt_key, type))}));
             if (it == options.end() || it->key != boost::nowide::widen(get_key(opt_key, type))) {
                 variant_index = -2;
