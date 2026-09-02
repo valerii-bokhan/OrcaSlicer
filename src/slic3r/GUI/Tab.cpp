@@ -8428,16 +8428,8 @@ void Tab::switch_excluder(int extruder_id, bool reload)
                 }
 
                 if (opt.second.second >= 0) {
-                    int option_index = index;
-                    if (page->title().StartsWith("Motion ability") &&
-                        printer_options_with_variant_2.count(opt.second.first) > 0) {
-                        // Machine limits are stored as (normal, silent) pairs for each printer variant.
-                        const bool silent = opt.first.size() >= 2 &&
-                                            opt.first.compare(opt.first.size() - 2, 2, "#1") == 0;
-                        option_index += silent ? 1 : 0;
-                    }
-                    const_cast<int &>(opt.second.second) = option_index;
-                    page->m_opt_id_map.insert({opt.second.first + "#" + std::to_string(option_index), opt.first});
+                    const_cast<int &>(opt.second.second) = index;
+                    page->m_opt_id_map.insert({opt.second.first + "#" + std::to_string(index), opt.first});
                     group->draw_multi_extruder = !is_extruder && variant_ctrl->IsThisEnabled();
                 }
             }
