@@ -63,6 +63,7 @@ struct Option
     std::wstring category;
     std::wstring category_local;
     bool multi_category { false };
+    bool indexed_config_value { false };
 
     std::string opt_key() const;
 };
