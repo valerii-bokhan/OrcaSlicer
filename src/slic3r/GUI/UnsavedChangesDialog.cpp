@@ -1802,13 +1802,9 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 continue;
             }
             auto category = option.category_local;
-            auto option_label = option.label_local;
             if (variant_index >= 0) {
-                if (printer_options_with_variant_2.count(opt_key.substr(0, opt_key.find_last_of('#'))) > 0) {
-                    const wxString mode = variant_index % 2 == 0 ? _L("Normal") : _L("Silent");
-                    option_label = wxString("[") + mode + "] " + option_label;
+                if (printer_options_with_variant_2.count(opt_key.substr(0, opt_key.find_last_of('#'))) > 0)
                     variant_index /= 2;
-                }
                 if (boost::nowide::narrow(category).find("Extruder ") == 0)
                     category = category.substr(0, 8);
                 if (extruder_id)
@@ -1824,7 +1820,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
 
             //PresetItem pi = {opt_key, type, 1983};
             //m_presetitems.push_back()
-            PresetItem pi = {type, opt_key, category, option.group_local, option_label, get_string_value(opt_key, old_config), get_string_value(opt_key, new_config)};
+            PresetItem pi = {type, opt_key, category, option.group_local, option.label_local, get_string_value(opt_key, old_config), get_string_value(opt_key, new_config)};
             m_presetitems.push_back(pi);
 
         }
