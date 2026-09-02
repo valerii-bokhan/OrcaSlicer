@@ -85,7 +85,7 @@ static std::string get_key(const std::string &opt_key, Preset::Type type) { retu
 
 void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type type, ConfigOptionMode mode)
 {
-    auto emplace = [this, type](const std::string key, const wxString &label, bool indexed_config_value) {
+    auto emplace = [this, type](const std::string key, const wxString &label) {
         const GroupAndCategory &gc = groups_and_categories[key];
         if (gc.group.IsEmpty() || gc.category.IsEmpty()) return;
 
@@ -98,11 +98,9 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
             suffix       = " " + suffix;
         }
 
-        if (!label.IsEmpty()) {
+        if (!label.IsEmpty())
             options.emplace_back(Option{boost::nowide::widen(key), type, (label + suffix).ToStdWstring(), (_(label) + suffix_local).ToStdWstring(), gc.group.ToStdWstring(),
                                         _(gc.group).ToStdWstring(), gc.category.ToStdWstring(), GUI::Tab::translate_category(gc.category, type).ToStdWstring()});
-            options.back().indexed_config_value = indexed_config_value;
-        }
     };
 
     for (std::string opt_key : config->keys()) {
@@ -110,7 +108,6 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
         if (opt.mode > mode) continue;
 
         int cnt = 0;
-        bool indexed_config_value = false;
 
         if ((type == Preset::TYPE_SLA_MATERIAL || type == Preset::TYPE_PRINTER || type == Preset::TYPE_PRINT) && opt_key != "printable_area")
             switch (config->option(opt_key)->type()) {
@@ -119,15 +116,9 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
             case coFloats: change_opt_key<ConfigOptionFloats>(opt_key, config, cnt); break;
             case coStrings: change_opt_key<ConfigOptionStrings>(opt_key, config, cnt); break;
             case coPercents: change_opt_key<ConfigOptionPercents>(opt_key, config, cnt); break;
-            case coFloatsOrPercents:
-                change_opt_key<ConfigOptionVector<FloatOrPercent>>(opt_key, config, cnt);
-                indexed_config_value = true;
-                break;
+            case coFloatsOrPercents: change_opt_key<ConfigOptionVector<FloatOrPercent>>(opt_key, config, cnt); break;
             case coPoints: change_opt_key<ConfigOptionPoints>(opt_key, config, cnt); break;
-            case coPointsGroups:
-                change_opt_key<ConfigOptionPointsGroups>(opt_key, config, cnt);
-                indexed_config_value = true;
-                break;
+            case coPointsGroups: change_opt_key<ConfigOptionPointsGroups>(opt_key, config, cnt); break;
             // BBS
             case coEnums: change_opt_key<ConfigOptionInts>(opt_key, config, cnt); break;
             default: break;
@@ -140,11 +131,11 @@ void OptionsSearcher::append_options(DynamicPrintConfig *config, Preset::Type ty
 
         std::string key = get_key(opt_key, type);
         if (cnt == 0)
-            emplace(key, label, indexed_config_value);
+            emplace(key, label);
         else
             for (int i = 0; i < cnt; ++i)
                 // ! It's very important to use "#". opt_key#n is a real option key used in GroupAndCategory
-                emplace(key + "#" + std::to_string(i), label, indexed_config_value);
+                emplace(key + "#" + std::to_string(i), label);
     }
 }
 
@@ -363,7 +354,11 @@ const Option &OptionsSearcher::get_option(const std::string &opt_key, Preset::Ty
             variant_index = -2; // Not found
             return options[0];
         }
-        if (it->indexed_config_value) {
+        const bool has_variant =
+            (type == Preset::TYPE_PRINT && print_options_with_variant.count(opt_key2) > 0) ||
+            (type == Preset::TYPE_FILAMENT && filament_options_with_variant.count(opt_key2) > 0) ||
+            (type == Preset::TYPE_PRINTER && printer_options_with_variant_1.count(opt_key2) > 0);
+        if (!has_variant) {
             const std::wstring indexed_key = boost::nowide::widen(get_key(opt_key, type));
             it = std::lower_bound(it, options.end(), Option({indexed_key}));
             if (it == options.end() || it->key != indexed_key) {
@@ -371,12 +366,6 @@ const Option &OptionsSearcher::get_option(const std::string &opt_key, Preset::Ty
                 return options[0];
             }
             variant_index = -1;
-        } else {
-            auto it2 = it;
-            ++it2;
-            if (it2 != options.end() && it2->opt_key().compare(0, opt_key3.length(), opt_key3) == 0
-                    && printer_options_with_variant_1.find(opt_key2) == printer_options_with_variant_1.end())
-                variant_index = -2;
         }
     }
 
