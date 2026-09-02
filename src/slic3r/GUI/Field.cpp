@@ -542,19 +542,20 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
     case coFloatsOrPercents: {
         if ((m_opt.type == coFloatOrPercent || m_opt.type == coFloatsOrPercents) && !str.IsEmpty() &&
             !(m_opt.nullable && str == m_na_value)) {
-            bool is_percent = str.Last() == '%';
             bool update_control = false;
             wxString numeric_str = str;
             double val = 0.;
-            if (is_percent)
-                numeric_str.RemoveLast();
 
             const char dec_sep = is_decimal_separator_point() ? '.' : ',';
             const char dec_sep_alt = dec_sep == '.' ? ',' : '.';
-            // Orca: normalize the decimal separator and optional unit before parsing.
+            // Orca: normalize the decimal separator and optional unit before
+            // detecting the percentage suffix and parsing the numeric part.
             update_control |= numeric_str.Replace(dec_sep_alt, dec_sep, false) != 0;
             update_control |= numeric_str.Replace(" ", "", true) != 0;
             update_control |= numeric_str.Replace("m", "", true) != 0;
+            bool is_percent = !numeric_str.IsEmpty() && numeric_str.Last() == '%';
+            if (is_percent)
+                numeric_str.RemoveLast();
 
             if (!numeric_str.ToDouble(&val)) {
                 if (!check_value) {
