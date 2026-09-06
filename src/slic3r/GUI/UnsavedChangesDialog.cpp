@@ -1354,6 +1354,9 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
     }
     case coFloatsOrPercents: {
         const auto* values = static_cast<const ConfigOptionVector<FloatOrPercent>*>(option);
+        // Orca: Preset comparison may request the entire vector instead of an indexed entry.
+        if (orig_opt_idx < 0)
+            return from_u8(option->serialize());
         if (opt_idx < values->size()) {
             const FloatOrPercent& value = values->get_at(opt_idx);
             return double_to_string(value.value) + (value.percent ? "%" : "");
@@ -1409,6 +1412,8 @@ static wxString get_string_value(std::string opt_key, const DynamicPrintConfig& 
     }
     case coPointsGroups: {
         const ConfigOptionPointsGroups* values = config.opt<ConfigOptionPointsGroups>(opt_key);
+        if (orig_opt_idx < 0)
+            return from_u8(option->serialize());
         if (values && opt_idx < values->size())
             return from_u8(values->vserialize()[opt_idx]);
         return _L("Undefined");
@@ -2348,9 +2353,10 @@ void DiffPresetDialog::update_tree()
             wxString right_val = get_string_value(opt_key, right_congig);
 
             const std::string lookup_key = get_pure_opt_key(opt_key);
-            Search::Option option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
+            // Orca: Preserve the extruder category of indexed fields such as printable areas.
+            Search::Option option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key)
-                option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
+                option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key) {
                 // When the found option is not the requested one.
                 // This can happen for dirty_options such as:
