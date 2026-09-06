@@ -1491,6 +1491,8 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, DynamicConfig * config
     for (const std::string &opt_key : config->keys()) {
         int                   variant_index = -2;
         const Search::Option &option        = searcher.get_option(opt_key, type, variant_index);
+        if (variant_index == -2)
+            continue;
         auto category = option.category_local;
         auto opt = dynamic_cast<ConfigOptionVectorBase*>(config->option(opt_key));
         std::string           value_from    = opt->vserialize()[from];
@@ -1553,25 +1555,33 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
 
         auto variant_key      = Preset::get_iot_type_string(type) + "_extruder_variant";
         auto id_key           = Preset::get_iot_type_string(type) + "_extruder_id";
-        auto extruder_variant = dynamic_cast<ConfigOptionStrings const *>(old_config.option(variant_key));
-        auto extruder_id      = dynamic_cast<ConfigOptionInts const *>(old_config.option(id_key));
+        // Orca: Dirty indices belong to the edited config, which may contain newly added variants.
+        auto extruder_variant = dynamic_cast<ConfigOptionStrings const *>(new_config.option(variant_key));
+        auto extruder_id      = dynamic_cast<ConfigOptionInts const *>(new_config.option(id_key));
 
         for (const std::string& opt_key : dirty_options) {
             int variant_index = -2;
             const Search::Option &option = searcher.get_option(opt_key, type, variant_index);
-            if (option.opt_key() != opt_key && variant_index < -1) {
+            if (variant_index == -2) {
                 // When founded option isn't the correct one.
                 // It can be for dirty_options: "default_print_profile", "printer_model", "printer_settings_id",
                 // because of they don't exist in searcher
                 continue;
             }
             auto category = option.category_local;
-            if (variant_index >= 0) {
-                if (printer_options_with_variant_2.count(opt_key.substr(0, opt_key.find_last_of('#'))) > 0)
-                    variant_index /= 2;
+            wxString label = option.label_local;
+            if (type == Preset::TYPE_PRINTER && variant_index >= 0 &&
+                printer_options_with_variant_2.count(get_pure_opt_key(opt_key)) > 0) {
+                // Orca: silent_mode is obsolete on import, but its option and two-column UI still exist.
+                // Keep mode labels for configs that explicitly enable it; omit them in the default single-mode UI.
+                if (new_config.opt_bool("silent_mode"))
+                    label += " (" + (variant_index % 2 == 0 ? _L("Normal") : _L("Silent")) + ")";
+                variant_index /= 2;
+            }
+            if (variant_index >= 0 && extruder_variant && variant_index < extruder_variant->size()) {
                 if (boost::nowide::narrow(category).find("Extruder ") == 0)
                     category = category.substr(0, 8);
-                if (extruder_id)
+                if (extruder_id && variant_index < extruder_id->size())
                     category = category + (wxString(" {") + (extruder_id->values[variant_index] == 1 ? _L("Left: ") : _L("Right: "))
                             + L(extruder_variant->values[variant_index]) + "}");
                 else
@@ -1584,7 +1594,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
 
             //PresetItem pi = {opt_key, type, 1983};
             //m_presetitems.push_back()
-            PresetItem pi = {type, opt_key, category, option.group_local, option.label_local, get_string_value(opt_key, old_config), get_string_value(opt_key, new_config)};
+            PresetItem pi = {type, opt_key, category, option.group_local, label, get_string_value(opt_key, old_config), get_string_value(opt_key, new_config)};
             m_presetitems.push_back(pi);
 
         }
@@ -2124,9 +2134,10 @@ void DiffPresetDialog::update_tree()
             wxString right_val = get_string_value(opt_key, right_congig);
 
             const std::string lookup_key = get_pure_opt_key(opt_key);
-            Search::Option option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
+            // Orca: Preserve the extruder category of indexed fields such as printable areas.
+            Search::Option option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key)
-                option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
+                option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key) {
                 // When the found option is not the requested one.
                 // This can happen for dirty_options such as:
