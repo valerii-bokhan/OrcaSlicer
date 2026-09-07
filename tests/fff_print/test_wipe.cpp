@@ -117,6 +117,47 @@ double trajectory_length(const WipeTrajectory &trajectory)
 
 } // namespace
 
+TEST_CASE("Changing inward wipe settings preserves the sliced geometry", "[Wipe][Regression]")
+{
+    const char *key = GENERATE("wipe_inward", "wipe_inward_distance");
+    DynamicPrintConfig config = wipe_config("classic", false);
+    Print print;
+    Model model;
+    init_print({make_cube(10., 10., 1.)}, print, model, config);
+    gcode(print);
+    const PrintObject &object = *print.objects().front();
+    REQUIRE(object.is_step_done(posPerimeters));
+    REQUIRE(object.is_step_done(posInfill));
+    REQUIRE(print.is_step_done(psWipeTower));
+    REQUIRE(print.is_step_done(psGCodeExport));
+
+    DynamicPrintConfig changed = config;
+    changed.set_deserialize_strict({{key, std::string(key) == "wipe_inward" ? "1" : "75%"}});
+    print.apply(model, changed);
+
+    CHECK(print.objects().front()->is_step_done(posPerimeters));
+    CHECK(print.objects().front()->is_step_done(posInfill));
+    CHECK(print.is_step_done(psWipeTower));
+    CHECK_FALSE(print.is_step_done(psGCodeExport));
+}
+
+TEST_CASE("Inactive inward wipe settings preserve the exported trajectory", "[Wipe][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const bool disable_wiping = GENERATE(false, true);
+    DynamicPrintConfig regular = wipe_config(wall_generator, false);
+    DynamicPrintConfig inward = wipe_config(wall_generator, true, disable_wiping ? "50%" : "0");
+    if (disable_wiping) {
+        regular.set_deserialize_strict({{"wipe", "0"}});
+        inward.set_deserialize_strict({{"wipe", "0"}});
+    }
+    const auto regular_paths = wipe_destinations(slice({make_cube(10., 10., 1.)}, regular));
+    const auto inward_paths = wipe_destinations(slice({make_cube(10., 10., 1.)}, inward));
+    if (!disable_wiping)
+        REQUIRE_FALSE(regular_paths.empty());
+    CHECK_FALSE(trajectories_differ(regular_paths, inward_paths));
+}
+
 TEST_CASE("Inward wipe changes the exported trajectory when outer wall width is Auto", "[Wipe][Regression]")
 {
     const char *wall_generator = GENERATE("classic", "arachne");

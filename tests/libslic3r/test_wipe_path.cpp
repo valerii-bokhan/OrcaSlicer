@@ -304,6 +304,53 @@ TEST_CASE("Stored wipe path checks the first segment from its actual start", "[W
     REQUIRE_FALSE(wipe_path_is_supported(path, Point(0, 0), support_near_ends, {}, 2 * s));
 }
 
+TEST_CASE("Stored wipe path rejects unsupported gaps between nearby samples", "[WipePath][Regression]")
+{
+    const Point start = Point::new_scale(0., 0.);
+    const Point end = Point::new_scale(0.8, 0.);
+    const Polyline path{start, end};
+    const double support_y = GENERATE(0.8, 0.95);
+    const Lines support{
+        Line(Point::new_scale(0., support_y), Point::new_scale(0., 2.)),
+        Line(Point::new_scale(0.8, support_y), Point::new_scale(0.8, 2.))
+    };
+
+    // Both endpoints are within 1 mm of support and the move is shorter than
+    // the old sampling interval. Only the 0.8 mm case supports its midpoint.
+    const bool supported = wipe_path_is_supported(path, start, support, {}, scale_(1.));
+    CHECK(supported == (support_y < 0.9));
+}
+
+TEST_CASE("Stored wipe path checks support at the actual nozzle position", "[WipePath][Regression]")
+{
+    const Point end = Point::new_scale(0., 0.);
+    const Polyline path{end, end};
+    const Lines support{Line(Point::new_scale(-1., 0.), Point::new_scale(1., 0.))};
+
+    REQUIRE_FALSE(wipe_path_is_supported(path, Point::new_scale(0., -2.), support, {}, scale_(1.)));
+}
+
+TEST_CASE("Direct inward fallback respects a short wipe distance before validation", "[WipePath][Regression]")
+{
+    const Point seam = Point::new_scale(0., 0.);
+    Polyline path{seam, Point::new_scale(10., 0.), Point::new_scale(10., 10.),
+                  Point::new_scale(0., 10.), seam};
+    const Lines current = path.lines();
+    const Lines support{Line(Point::new_scale(0.4, 0.4), Point::new_scale(9.6, 0.4))};
+    const bool pre_move = GENERATE(false, true);
+    const Point wipe_start = pre_move ? Point::new_scale(0.02, 0.02) : seam;
+    const double wipe_length = scale_(0.05);
+
+    REQUIRE(offset_wipe_path_toward_support(
+        path, seam, seam, wipe_start, +1, scale_(0.2), wipe_length,
+        support, support, current, scale_(0.4)));
+    REQUIRE(path.points.size() == 2);
+    path.points.front() = wipe_start;
+    CHECK_THAT(path.length(), Catch::Matchers::WithinAbs(wipe_length, 2.));
+    CHECK(path.last_point().x() > wipe_start.x());
+    CHECK(path.last_point().y() > wipe_start.y());
+}
+
 TEST_CASE("Stored wipe path uses a stable zero-gap join for nearly parallel segments", "[WipePath][Regression]")
 {
     const auto point = [](double x, double y) { return Point::new_scale(x, y); };
