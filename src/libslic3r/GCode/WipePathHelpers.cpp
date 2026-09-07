@@ -340,6 +340,32 @@ static bool translated_wipe_path(Polyline &polyline, Point seam_start, Point sea
     return store_wipe_path(polyline, seam_start, std::move(actual_path), max_wipe_length);
 }
 
+// A segment whose endpoints lie within one line's distance capsule is fully
+// supported, since that capsule is convex. Subdivide only when support changes
+// between lines; fixed-distance sampling can miss an unsupported gap.
+static bool segment_is_supported(Point start, Point end,
+                                  const AABBTreeLines::LinesDistancer<Line> &distancer,
+                                  double max_distance)
+{
+    const Point midpoint = ((start.cast<double>() + end.cast<double>()) * 0.5).cast<coord_t>();
+    const auto [distance, line_index, nearest] = distancer.distance_from_lines_extra<false>(midpoint);
+    if (distance > max_distance)
+        return false;
+
+    const Line &line = distancer.get_line(line_index);
+    if (line.distance_to(start) <= max_distance && line.distance_to(end) <= max_distance)
+        return true;
+    if (distancer.distance_from_lines<false>(start) > max_distance ||
+        distancer.distance_from_lines<false>(end) > max_distance)
+        return false;
+
+    // Conservatively reject an unresolved transition at coordinate precision.
+    if ((end - start).cast<double>().norm() <= SCALED_EPSILON)
+        return false;
+    return segment_is_supported(start, midpoint, distancer, max_distance) &&
+           segment_is_supported(midpoint, end, distancer, max_distance);
+}
+
 static std::optional<double> wipe_path_support_score(
     const Polyline &polyline, Point wipe_start,
     const AABBTreeLines::LinesDistancer<Line> &target_distancer,
@@ -357,29 +383,16 @@ static std::optional<double> wipe_path_support_score(
         miter_limit * max_distance + 4. * SCALED_EPSILON)
         return std::nullopt;
 
-    const auto is_supported = [max_distance](const Point &point, const AABBTreeLines::LinesDistancer<Line> &distancer) {
-        // Orca: offset joins and closest-point projection involve several
-        // rounded scaled coordinates. Keep the tolerance below G-code XY
-        // resolution while absorbing their compounded quantization error.
-        return distancer.distance_from_lines<false>(point) <= max_distance + 4. * SCALED_EPSILON;
-    };
-
     Point previous = wipe_start;
     for (size_t i = 1; i < polyline.points.size(); ++i) {
         // Orca: a tightly curved inward path may cross back over the current wall.
         // This is safe for a non-extruding wipe as long as the complete path
         // remains over current or earlier printed perimeter geometry.
-        if (! is_supported(polyline.points[i], all_support_distancer))
+        // Allow the same coordinate-rounding tolerance at every point, including
+        // the actual start substituted for the stored sentinel.
+        if (! segment_is_supported(previous, polyline.points[i], all_support_distancer,
+                                   max_distance + 4. * SCALED_EPSILON))
             return std::nullopt;
-
-        const Vec2d segment = (polyline.points[i] - previous).cast<double>();
-        const size_t samples = size_t(std::ceil(segment.norm() / max_distance));
-        for (size_t sample = 1; sample < samples; ++sample) {
-            const Point point = (previous.cast<double>() +
-                segment * (double(sample) / double(samples))).cast<coord_t>();
-            if (! is_supported(point, all_support_distancer))
-                return std::nullopt;
-        }
         previous = polyline.points[i];
     }
 
@@ -709,8 +722,9 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (destination == wipe_start)
             return std::nullopt;
 
-        Polyline path{seam_start, destination};
-        path.reset_to_linear_move();
+        Polyline path;
+        if (! store_wipe_path(path, seam_start, Polyline{wipe_start, destination}, max_wipe_length))
+            return std::nullopt;
         const double candidate_tolerance = std::max(4. * SCALED_EPSILON, 0.1 * candidate_offset);
         return validate_candidate(std::move(path), origin, candidate_tolerance, direction, false);
     };
