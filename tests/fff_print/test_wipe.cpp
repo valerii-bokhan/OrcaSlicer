@@ -122,11 +122,13 @@ double trajectory_length(const WipeTrajectory &trajectory)
 TEST_CASE("Wipe retraction preserves fractional speed with inward wipe disabled", "[Wipe][Regression]")
 {
     const char *retraction_speed = GENERATE("25.25", "25.5", "25.75");
+    const char *relative_e = GENERATE("0", "1");
     INFO("retraction speed: " << retraction_speed);
+    INFO("relative E: " << relative_e);
     DynamicPrintConfig config = wipe_config("classic", false);
     config.set_deserialize_strict({
         {"gcode_flavor", "marlin2"},
-        {"use_relative_e_distances", "0"},
+        {"use_relative_e_distances", relative_e},
         {"retraction_speed", retraction_speed},
         {"retraction_length", "0.8"},
         {"retract_before_wipe", "0%"},
@@ -143,6 +145,7 @@ TEST_CASE("Wipe retraction preserves fractional speed with inward wipe disabled"
     bool in_wipe = false;
     bool complete = false;
     GCodeReader parser;
+    parser.apply_config(config);
     parser.parse_buffer(output, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
         if (complete)
             return;
