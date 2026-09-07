@@ -1490,9 +1490,15 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, DynamicConfig * config
 
     for (const std::string &opt_key : config->keys()) {
         int                   variant_index = -2;
-        const Search::Option &option        = searcher.get_option(opt_key, type, variant_index);
-        if (variant_index == -2)
-            continue;
+        Search::Option        option        = searcher.get_option(opt_key, type, variant_index);
+        if (variant_index == -2) {
+            // Orca: Every transferred setting must remain visible even when it is absent from the search index.
+            const ConfigOptionDef* def = print_config_def.get(opt_key);
+            const std::string label = def ? (def->full_label.empty() ? def->label : def->full_label) : std::string();
+            option.label_local = (label.empty() ? from_u8(opt_key) : _L(label)).ToStdWstring();
+            option.category_local = (def && !def->category.empty() ?
+                Tab::translate_category(from_u8(def->category), type) : _L("Other")).ToStdWstring();
+        }
         auto category = option.category_local;
         auto opt = dynamic_cast<ConfigOptionVectorBase*>(config->option(opt_key));
         std::string           value_from    = opt->vserialize()[from];
@@ -1568,7 +1574,7 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 // because of they don't exist in searcher
                 continue;
             }
-            auto category = option.category_local;
+            wxString category = option.category_local;
             wxString label = option.label_local;
             if (type == Preset::TYPE_PRINTER && variant_index >= 0 &&
                 printer_options_with_variant_2.count(get_pure_opt_key(opt_key)) > 0) {
@@ -1579,13 +1585,16 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 variant_index /= 2;
             }
             if (variant_index >= 0 && extruder_variant && variant_index < extruder_variant->size()) {
-                if (boost::nowide::narrow(category).find("Extruder ") == 0)
-                    category = category.substr(0, 8);
-                if (extruder_id && variant_index < extruder_id->size())
-                    category = category + (wxString(" {") + (extruder_id->values[variant_index] == 1 ? _L("Left: ") : _L("Right: "))
-                            + L(extruder_variant->values[variant_index]) + "}");
-                else
-                    category = category + (wxString(" {") + L(extruder_variant->values[variant_index]) + "}");
+                // Orca: Match the untranslated category and use the same extruder names as the printer tabs.
+                if (option.category.compare(0, 9, L"Extruder ") == 0)
+                    category = _L("Extruder");
+                wxString variant_label = L(extruder_variant->values[variant_index]);
+                if (extruder_id && variant_index < extruder_id->size() && extruder_id->values[variant_index] > 0) {
+                    const wxString extruder_name = Tab::translate_category(
+                        wxString::Format("Extruder %d", extruder_id->values[variant_index]), Preset::TYPE_PRINTER);
+                    variant_label = extruder_name + ": " + variant_label;
+                }
+                category += " {" + variant_label + "}";
             }
 
             /*m_tree->Append(opt_key, type, option.category_local, option.group_local, option.label_local,
@@ -2134,10 +2143,9 @@ void DiffPresetDialog::update_tree()
             wxString right_val = get_string_value(opt_key, right_congig);
 
             const std::string lookup_key = get_pure_opt_key(opt_key);
-            // Orca: Preserve the extruder category of indexed fields such as printable areas.
-            Search::Option option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
+            Search::Option option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key)
-                option = searcher.get_option(lookup_key, get_full_label(lookup_key, left_config), type);
+                option = searcher.get_option(opt_key, get_full_label(opt_key, left_config), type);
             if (get_pure_opt_key(option.opt_key()) != lookup_key) {
                 // When the found option is not the requested one.
                 // This can happen for dirty_options such as:
