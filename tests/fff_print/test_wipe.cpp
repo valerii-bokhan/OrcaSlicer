@@ -1,5 +1,7 @@
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <string>
 #include <string_view>
@@ -116,6 +118,52 @@ double trajectory_length(const WipeTrajectory &trajectory)
 }
 
 } // namespace
+
+TEST_CASE("Wipe retraction preserves fractional speed with inward wipe disabled", "[Wipe][Regression]")
+{
+    const char *retraction_speed = GENERATE("25.25", "25.5", "25.75");
+    INFO("retraction speed: " << retraction_speed);
+    DynamicPrintConfig config = wipe_config("classic", false);
+    config.set_deserialize_strict({
+        {"gcode_flavor", "marlin2"},
+        {"use_relative_e_distances", "0"},
+        {"retraction_speed", retraction_speed},
+        {"retraction_length", "0.8"},
+        {"retract_before_wipe", "0%"},
+        {"retract_after_wipe", "0%"},
+        {"role_based_wipe_speed", "0"},
+        {"wipe_speed", "100"},
+        {"wipe_distance", "2"},
+    });
+    const std::string output = slice({make_cube(10., 10., 1.)}, config);
+    const auto &start_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Start);
+    const auto &end_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_End);
+    double before_wipe = 0.;
+    double during_wipe = 0.;
+    bool in_wipe = false;
+    bool complete = false;
+    GCodeReader parser;
+    parser.parse_buffer(output, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        if (complete)
+            return;
+        if (line.comment().find(start_tag) != std::string_view::npos) {
+            in_wipe = true;
+        } else if (in_wipe && line.comment().find(end_tag) != std::string_view::npos) {
+            complete = true;
+        } else if (line.retracting(self)) {
+            (in_wipe ? during_wipe : before_wipe) -= line.dist_E(self);
+        } else if (line.extruding(self)) {
+            before_wipe = 0.;
+        }
+    });
+
+    REQUIRE(complete);
+    // At 100 mm/s, the 2 mm wipe lasts 0.02 seconds. The remaining part of
+    // the configured 0.8 mm retraction must be emitted before that wipe.
+    const double expected_during = std::stod(retraction_speed) * 2. / 100.;
+    CHECK_THAT(during_wipe, Catch::Matchers::WithinAbs(expected_during, 0.00005));
+    CHECK_THAT(before_wipe, Catch::Matchers::WithinAbs(0.8 - expected_during, 0.00005));
+}
 
 TEST_CASE("Changing inward wipe settings preserves the sliced geometry", "[Wipe][Regression]")
 {
@@ -297,8 +345,34 @@ TEST_CASE("Inward wipe remains valid after wipe on loops moves the nozzle", "[Wi
     const std::string inward_only = slice(
         {make_cube(10., 10., 1.)}, wipe_config(wall_generator, true));
 
-    REQUIRE(loop_move.find("move inwards before travel") != std::string::npos);
-    REQUIRE(combined.find("move inwards before travel") != std::string::npos);
+    for (const std::string *output : {&loop_move, &combined}) {
+        INFO("wipe_inward: " << (output == &combined));
+        std::map<double, std::vector<Vec2d>> loop_moves_by_layer;
+        GCodeReader parser;
+        parser.parse_buffer(*output, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+            if (line.comment().find("move inwards before travel") != std::string_view::npos)
+                loop_moves_by_layer[line.new_Z(self)].emplace_back(line.new_X(self), line.new_Y(self));
+        });
+
+        // The 1 mm cube at 0.2 mm layer height has one external loop on each of five layers.
+        const auto trajectories = wipe_trajectories(*output);
+        REQUIRE(loop_moves_by_layer.size() == 5);
+        for (size_t layer = 1; layer <= 5; ++layer) {
+            const double z = layer * 0.2;
+            const auto moves = std::find_if(loop_moves_by_layer.begin(), loop_moves_by_layer.end(),
+                [z](const auto &entry) { return std::abs(entry.first - z) < 0.001; });
+            REQUIRE(moves != loop_moves_by_layer.end());
+            REQUIRE(moves->second.size() == 1);
+            const auto wipe = std::find_if(trajectories.begin(), trajectories.end(), [&](const WipeTrajectory &trajectory) {
+                return std::abs(trajectory.z - z) < 0.001 &&
+                       (trajectory.start - moves->second.front()).norm() < 0.001;
+            });
+            REQUIRE(wipe != trajectories.end());
+            // The configured 2 mm wipe must be measured from the inward move's
+            // endpoint, including when wipe_inward is off (set_last_pos regression).
+            CHECK_THAT(trajectory_length(*wipe), Catch::Matchers::WithinAbs(2., 0.003));
+        }
+    }
 
     const std::vector<WipeTrajectory> combined_trajectories = wipe_trajectories(combined);
     const std::vector<WipeTrajectory> inward_trajectories = wipe_trajectories(inward_only);
