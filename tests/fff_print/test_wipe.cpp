@@ -336,6 +336,54 @@ TEST_CASE("Inward wipe is not applied before the adjacent wall is printed", "[Wi
     REQUIRE_FALSE(trajectories_differ(regular, inward));
 }
 
+TEST_CASE("Wipe on loops preserves the corner move with inward wipe disabled", "[Wipe][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const char *nozzle_diameter = GENERATE("0.4", "0.8");
+    INFO("wall generator: " << wall_generator << ", nozzle diameter: " << nozzle_diameter);
+    // A closed square gives a 90-degree material-side corner at the seam.
+    DynamicPrintConfig config = wipe_config(wall_generator, false, "50%", "0", true);
+    config.set_deserialize_strict({{"nozzle_diameter", nozzle_diameter}, {"seam_position", "nearest"}});
+    const std::string output = slice({make_cube(10., 10., 1.)}, config);
+    const auto &role_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role);
+    ExtrusionRole role = erNone;
+    std::vector<Vec2d> loop;
+    size_t moves = 0;
+    GCodeReader parser;
+    parser.apply_config(config);
+    parser.parse_buffer(output, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        if (line.comment().find(role_tag) == 0) {
+            role = ExtrusionEntity::string_to_role(line.comment().substr(role_tag.size()));
+            loop.clear();
+        }
+        if (role != erExternalPerimeter)
+            return;
+        if (line.extruding(self) && line.dist_XY(self) > EPSILON) {
+            if (loop.empty())
+                loop.emplace_back(self.x(), self.y());
+            loop.emplace_back(line.new_X(self), line.new_Y(self));
+        }
+        if (line.comment().find("move inwards before travel") == std::string_view::npos)
+            return;
+
+        ++moves;
+        INFO("layer Z: " << self.z());
+        REQUIRE(loop.size() >= 4);
+        const Vec2d seam = loop.front();
+        REQUIRE_THAT((loop.back() - seam).norm(), Catch::Matchers::WithinAbs(0., 0.003));
+        const Vec2d outgoing = (loop[1] - seam).normalized();
+        const Vec2d into_corner = (loop[loop.size() - 2] - seam).normalized();
+        REQUIRE_THAT(outgoing.dot(into_corner), Catch::Matchers::WithinAbs(0., 0.01));
+        const Vec2d move = Vec2d(line.new_X(self), line.new_Y(self)) - seam;
+        // The legacy corner move is 20% of the nozzle diameter, turned 30 degrees
+        // from the outgoing edge into the square. Check both components independently.
+        const double distance = 0.2 * std::stod(nozzle_diameter);
+        CHECK_THAT(move.dot(outgoing), Catch::Matchers::WithinAbs(distance * std::sqrt(3.) / 2., 0.003));
+        CHECK_THAT(move.dot(into_corner), Catch::Matchers::WithinAbs(distance / 2., 0.003));
+    });
+    REQUIRE(moves == 5);
+}
+
 TEST_CASE("Inward wipe remains valid after wipe on loops moves the nozzle", "[Wipe][Regression]")
 {
     const char *wall_generator = GENERATE("classic", "arachne");
