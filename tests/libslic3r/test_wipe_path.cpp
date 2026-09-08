@@ -669,15 +669,31 @@ TEST_CASE("wipe_on_loops destination is on the material side for every orientati
     const auto [is_ccw, is_hole] = GENERATE(
         table<bool, bool>({{true, false}, {false, false}, {false, true}, {true, true}}));
     INFO("is_ccw=" << is_ccw << ", is_hole=" << is_hole);
+    const double nozzle_diameter = GENERATE(0.4, 0.8);
+    const bool subdivided = GENERATE(false, true);
+    INFO("nozzle diameter=" << nozzle_diameter << ", subdivided=" << subdivided);
 
     const coord_t s = scale_(1.0);
-    const std::vector<Point> contour = is_ccw ?
-        std::vector<Point>{Point(0, 0), Point(20 * s, 0), Point(20 * s, 20 * s), Point(0, 20 * s)} :
-        std::vector<Point>{Point(0, 0), Point(0, 20 * s), Point(20 * s, 20 * s), Point(20 * s, 0)};
-    const ExtrusionPaths paths = make_loop_paths(contour);
+    std::vector<Point> contour = {Point(0, 0), Point(20 * s, 0), Point(20 * s, 20 * s), Point(0, 20 * s)};
+    if (subdivided) {
+        // The same square, with path boundaries inside both sampling distances near the seam.
+        contour = {Point(0, 0), Point(scale_(0.03), 0.), Point(scale_(0.2), 0.),
+                   Point(20 * s, 0), Point(20 * s, 20 * s), Point(0, 20 * s),
+                   Point(0., scale_(0.2)), Point(0., scale_(0.03))};
+    }
+    if (!is_ccw)
+        for (Point &point : contour)
+            std::swap(point.x(), point.y());
+    ExtrusionPaths paths;
+    if (subdivided) {
+        for (size_t i = 0; i < contour.size(); ++i)
+            paths.push_back(make_path({contour[i], contour[(i + 1) % contour.size()]}));
+    } else {
+        paths = make_loop_paths(contour);
+    }
 
     const std::optional<Point> destination =
-        wipe_on_loops_destination(paths, scale_(0.4), is_ccw, is_hole);
+        wipe_on_loops_destination(paths, scale_(nozzle_diameter), is_ccw, is_hole);
     REQUIRE(destination.has_value());
 
     const Point seam_start = paths.front().first_point();
@@ -689,7 +705,12 @@ TEST_CASE("wipe_on_loops destination is on the material side for every orientati
     // Orca: contours use their winding's inside; holes use the opposite side.
     const Vec2d move = destination->cast<double>() - seam_start.cast<double>();
     REQUIRE(move.dot(material_normal) > 0.);
-    REQUIRE(move.norm() <= scale_(0.5));
+    // Move 20% of the nozzle diameter, turning through one third of the material-side
+    // corner: 90 degrees for a contour, 270 degrees for a hole.
+    const double distance = scale_(0.2 * nozzle_diameter);
+    const double angle = is_hole ? PI / 2. : PI / 6.;
+    CHECK_THAT(move.dot(first_edge.normalized()), Catch::Matchers::WithinAbs(distance * std::cos(angle), 2.));
+    CHECK_THAT(move.dot(material_normal.normalized()), Catch::Matchers::WithinAbs(distance * std::sin(angle), 2.));
 }
 
 TEST_CASE("wipe_on_loops returns destination for small but nonzero loop", "[WipePath]")
