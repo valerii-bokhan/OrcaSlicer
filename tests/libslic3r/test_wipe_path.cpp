@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "libslic3r/GCode/WipePathHelpers.hpp"
+#include "libslic3r/AABBTreeLines.hpp"
 #include "libslic3r/Polyline.hpp"
 #include "libslic3r/Point.hpp"
 #include "libslic3r/Line.hpp"
@@ -10,6 +11,7 @@
 #include <limits>
 
 using namespace Slic3r;
+using Slic3r::AABBTreeLines::LinesDistancer;
 
 // Orca: helpers for constructing the extrusion geometry used by wipe tests.
 
@@ -235,7 +237,10 @@ TEST_CASE("Stored wipe path defers actual-start crossings to support validation"
     const Point wipe_start(50 * s, -10 * s);
 
     REQUIRE(offset_wipe_path(path, Point(0, 0), Point(0, 0), wipe_start, +1, 5 * s, 100 * s));
-    REQUIRE_FALSE(wipe_path_is_supported(path, wipe_start, remote, current, 5 * s));
+    Lines all_support = remote;
+    all_support.insert(all_support.end(), current.begin(), current.end());
+    REQUIRE_FALSE(wipe_path_support_score(path, wipe_start,
+        LinesDistancer<Line>(remote), LinesDistancer<Line>(all_support), 5 * s).has_value());
 }
 
 TEST_CASE("Stored wipe path keeps the closing join when its prefix ends at the closing vertex", "[WipePath]")
@@ -284,10 +289,20 @@ TEST_CASE("Stored wipe path requires nearby generated perimeter geometry", "[Wip
     const Lines remote{Line(Point(0, 20 * s), Point(10 * s, 20 * s))};
     const Lines current = path.lines();
 
-    REQUIRE(wipe_path_is_supported(path, Point(0, 2 * s), adjacent, {}, 3 * s));
-    REQUIRE_FALSE(wipe_path_is_supported(path, Point(0, 2 * s), adjacent, {}, 0));
-    REQUIRE_FALSE(wipe_path_is_supported(path, Point(0, 2 * s), remote, {}, 3 * s));
-    REQUIRE_FALSE(wipe_path_is_supported(path, Point(0, 2 * s), remote, current, 3 * s));
+    const LinesDistancer<Line> adjacent_distancer(adjacent);
+    const LinesDistancer<Line> remote_distancer(remote);
+    Lines all_support = remote;
+    all_support.insert(all_support.end(), current.begin(), current.end());
+    const LinesDistancer<Line> all_support_distancer(all_support);
+
+    const auto score = wipe_path_support_score(path, Point(0, 2 * s), adjacent_distancer, adjacent_distancer, 3 * s);
+    REQUIRE(score.has_value());
+    CHECK_THAT(*score, Catch::Matchers::WithinAbs(2. * s, 2.));
+    REQUIRE_FALSE(wipe_path_support_score(path, Point(0, 2 * s), adjacent_distancer, adjacent_distancer, 0).has_value());
+    REQUIRE_FALSE(wipe_path_support_score(path, Point(0, 2 * s), remote_distancer, remote_distancer, 3 * s).has_value());
+    REQUIRE_FALSE(wipe_path_support_score(path, Point(0, 2 * s), remote_distancer, all_support_distancer, 3 * s).has_value());
+    REQUIRE_FALSE(wipe_path_support_score(path, Point(0, 2 * s), LinesDistancer<Line>(Lines{}),
+                                          all_support_distancer, 3 * s).has_value());
 }
 
 TEST_CASE("Stored wipe path checks the first segment from its actual start", "[WipePath]")
@@ -301,7 +316,8 @@ TEST_CASE("Stored wipe path checks the first segment from its actual start", "[W
 
     // Orca: both endpoints are supported, but the middle of the executable segment
     // from wipe_start is not. The dummy path[0] must not hide that segment.
-    REQUIRE_FALSE(wipe_path_is_supported(path, Point(0, 0), support_near_ends, {}, 2 * s));
+    const LinesDistancer<Line> support_distancer(support_near_ends);
+    REQUIRE_FALSE(wipe_path_support_score(path, Point(0, 0), support_distancer, support_distancer, 2 * s).has_value());
 }
 
 TEST_CASE("Stored wipe path rejects unsupported gaps between nearby samples", "[WipePath][Regression]")
@@ -317,7 +333,8 @@ TEST_CASE("Stored wipe path rejects unsupported gaps between nearby samples", "[
 
     // Both endpoints are within 1 mm of support and the move is shorter than
     // the old sampling interval. Only the 0.8 mm case supports its midpoint.
-    const bool supported = wipe_path_is_supported(path, start, support, {}, scale_(1.));
+    const LinesDistancer<Line> support_distancer(support);
+    const bool supported = wipe_path_support_score(path, start, support_distancer, support_distancer, scale_(1.)).has_value();
     CHECK(supported == (support_y < 0.9));
 }
 
@@ -327,7 +344,9 @@ TEST_CASE("Stored wipe path checks support at the actual nozzle position", "[Wip
     const Polyline path{end, end};
     const Lines support{Line(Point::new_scale(-1., 0.), Point::new_scale(1., 0.))};
 
-    REQUIRE_FALSE(wipe_path_is_supported(path, Point::new_scale(0., -2.), support, {}, scale_(1.)));
+    const LinesDistancer<Line> support_distancer(support);
+    REQUIRE_FALSE(wipe_path_support_score(path, Point::new_scale(0., -2.),
+        support_distancer, support_distancer, scale_(1.)).has_value());
 }
 
 TEST_CASE("Direct inward fallback respects a short wipe distance before validation", "[WipePath][Regression]")
@@ -548,7 +567,10 @@ TEST_CASE("Stored wipe path may return to the current wall after reaching an ear
     const Lines earlier{Line(Point(0, 2 * s), Point(10 * s, 2 * s))};
     const Lines current{Line(Point(0, 0), Point(10 * s, 0))};
 
-    REQUIRE(wipe_path_is_supported(path, Point(0, 0), earlier, current, s));
+    Lines all_support = earlier;
+    all_support.insert(all_support.end(), current.begin(), current.end());
+    REQUIRE(wipe_path_support_score(path, Point(0, 0),
+        LinesDistancer<Line>(earlier), LinesDistancer<Line>(all_support), s).has_value());
 }
 
 TEST_CASE("Stored wipe path tolerates compounded coordinate quantization", "[WipePath]")
@@ -559,7 +581,8 @@ TEST_CASE("Stored wipe path tolerates compounded coordinate quantization", "[Wip
     const Polyline path{Point(0, 0), destination};
     const Lines earlier{Line(Point(-s, 0), Point(s, 0))};
 
-    REQUIRE(wipe_path_is_supported(path, destination, earlier, {}, 2 * s));
+    const LinesDistancer<Line> support_distancer(earlier);
+    REQUIRE(wipe_path_support_score(path, destination, support_distancer, support_distancer, 2 * s).has_value());
 }
 
 TEST_CASE("Stored wipe path stays on the inner side of a short external loop", "[WipePath][Regression]")

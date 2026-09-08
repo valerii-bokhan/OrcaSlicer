@@ -8,6 +8,10 @@
 
 namespace Slic3r {
 
+namespace AABBTreeLines {
+template <typename LineType> class LinesDistancer;
+}
+
 // Orca: sample a point at a given distance along ExtrusionPaths, walking
 // across segment boundaries. forward=true walks from paths.front, false from
 // paths.back. For tiny loops the walk stops early and returns the last
@@ -23,21 +27,27 @@ int wipe_offset_direction(bool is_ccw, bool is_hole);
 // determines the join with the first outgoing perimeter edge, but its offset
 // is not part of the executable wipe. Only the prefix needed by Wipe::wipe()
 // is offset. Returns false and leaves polyline unchanged if that path cannot
-// be constructed without degenerate segments. The caller must use
-// wipe_path_is_supported() before accepting the result. The first stored point
+// be constructed without degenerate segments. This only constructs a candidate;
+// offset_wipe_path_toward_support() validates its support, material side and
+// connector before accepting it. The first stored point
 // remains a dummy preserving Wipe::wipe()'s convention of skipping points[0].
 // Precondition: polyline starts at seam_start, dir is +1 or -1, and
 // offset_dist > 0. A non-positive max_wipe_length returns false.
 bool offset_wipe_path(Polyline &polyline, Point seam_start, Point seam_end, Point wipe_start,
                       int dir, double offset_dist, double max_wipe_length);
 
-// Orca: verify that the complete executable offset wipe path stays near the
-// current or an earlier perimeter and that an earlier perimeter is locally
-// available at the wipe start. The first stored point is the dummy skipped by
-// Wipe::wipe(), so wipe_start is used as the actual start of the first segment.
-bool wipe_path_is_supported(const Polyline &polyline, Point wipe_start,
-                            const Lines &other_perimeter_lines, const Lines &current_perimeter_lines,
-                            double max_distance);
+// Orca: score a candidate's first destination by distance to the target inner
+// walls. Return nullopt if no target wall is near wipe_start or any executable
+// segment lacks support. target_distancer contains eligible earlier walls;
+// all_support_distancer includes the current wall and all earlier walls.
+// The stored first point is a dummy: the first segment starts at wipe_start.
+// This checks support only; material-side and connector checks belong to
+// offset_wipe_path_toward_support(). Trees are reused across its candidates.
+std::optional<double> wipe_path_support_score(
+    const Polyline &polyline, Point wipe_start,
+    const AABBTreeLines::LinesDistancer<Line> &target_distancer,
+    const AABBTreeLines::LinesDistancer<Line> &all_support_distancer,
+    double max_distance);
 
 // Orca: identify the adjacent inner perimeter from the outgoing wall, excluding
 // support on the air side of a closed zero-gap loop. Clamp the requested offset
