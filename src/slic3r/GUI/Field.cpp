@@ -11,6 +11,7 @@
 #include "libslic3r/PrintConfig.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <regex>
 #include <utility>
 #include <cstdint>
@@ -552,12 +553,16 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
             // detecting the percentage suffix and parsing the numeric part.
             update_control |= numeric_str.Replace(dec_sep_alt, dec_sep, false) != 0;
             update_control |= numeric_str.Replace(" ", "", true) != 0;
-            update_control |= numeric_str.Replace("m", "", true) != 0;
+            const bool has_literal_unit = numeric_str.EndsWith("mm");
+            if (has_literal_unit) {
+                numeric_str.RemoveLast(2);
+                update_control = true;
+            }
             bool is_percent = !numeric_str.IsEmpty() && numeric_str.Last() == '%';
             if (is_percent)
                 numeric_str.RemoveLast();
 
-            if (!numeric_str.ToDouble(&val)) {
+            if ((has_literal_unit && is_percent) || !numeric_str.ToDouble(&val) || !std::isfinite(val)) {
                 if (!check_value) {
                     m_value.clear();
                     break;
@@ -567,12 +572,13 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
                 is_percent = false;
                 update_control = true;
             } else {
-                const bool looks_like_missing_percent = !is_percent &&
+                const bool looks_like_missing_percent = !is_percent && !has_literal_unit &&
                     ((m_opt.sidetext.rfind("mm/s") != std::string::npos && val > m_opt.max) ||
                      (m_opt.sidetext.rfind("mm ") != std::string::npos && val > m_opt.max_literal));
                 // Orca: validate explicit percentages and literal values before
                 // asking whether an otherwise valid literal was meant as a percentage.
-                if (!m_opt.is_value_valid(val)) {
+                const bool out_of_range = !m_opt.is_value_valid(val);
+                if (out_of_range) {
                     if (!check_value) {
                         m_value.clear();
                         break;
@@ -593,29 +599,31 @@ void Field::get_value_by_opt_type(wxString& str, const bool check_value/* = true
                         }
 
                         const std::string sidetext = m_opt.sidetext.rfind("mm/s") != std::string::npos ? "mm/s" : "mm";
-                        const wxString stVal       = double_to_string(val, 2);
+                        const wxString stVal       = numeric_str;
                         const wxString msg_text    = from_u8((boost::format(_utf8(L("Is it %s%% or %s %s?"))) %
                                                               stVal % stVal % sidetext).str());
                         WarningDialog dialog(m_parent, msg_text, _L("Parameter validation") + ": " + m_opt_id, wxYES | wxNO);
                         dialog.SetButtonLabel(wxID_YES, stVal + _L("%"));
                         dialog.SetButtonLabel(wxID_NO, stVal + " " + _L(sidetext));
+                        dialog.GetSizer()->SetSizeHints(&dialog);
+                        dialog.Fit();
+                        dialog.CenterOnParent();
                         is_percent = dialog.ShowModal() == wxID_YES;
-                        numeric_str = stVal;
                         update_control = true;
                     }
+                }
 
-                    // Orca: max limits percentage values, while max_literal
-                    // limits absolute lengths after the user confirms millimeters.
-                    if (!is_percent && m_opt.sidetext.rfind("mm ") != std::string::npos && val > m_opt.max_literal) {
-                        if (!check_value) {
-                            m_value.clear();
-                            break;
-                        }
-                        show_error(m_parent, _L("Value is out of range."));
-                        val = m_opt.max_literal;
-                        numeric_str = double_to_string(val);
-                        update_control = true;
+                // Orca: also enforce the literal limit after clamping an explicit mm input.
+                if (!is_percent && m_opt.sidetext.rfind("mm ") != std::string::npos && val > m_opt.max_literal) {
+                    if (!check_value) {
+                        m_value.clear();
+                        break;
                     }
+                    if (!out_of_range)
+                        show_error(m_parent, _L("Value is out of range."));
+                    val = m_opt.max_literal;
+                    numeric_str = double_to_string(val);
+                    update_control = true;
                 }
             }
 
