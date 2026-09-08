@@ -24,6 +24,13 @@ static constexpr double reversal_dot_threshold = -0.99;
 // wall are too tangent to distinguish the material side reliably at a cusp.
 static constexpr double min_support_alignment = 0.5;
 
+// Keep a scaled-coordinate rounding floor while allowing the tolerance to
+// follow the relevant offset or path length. Clearance allows a larger fraction.
+static double wipe_tolerance(double distance, double relative_tolerance = 0.1)
+{
+    return std::max(4. * SCALED_EPSILON, relative_tolerance * distance);
+}
+
 Point sample_path_at_distance(const ExtrusionPaths &paths, bool forward, double target)
 {
     assert(!paths.empty());
@@ -366,7 +373,7 @@ static bool segment_is_supported(Point start, Point end,
            segment_is_supported(midpoint, end, distancer, max_distance);
 }
 
-static std::optional<double> wipe_path_support_score(
+std::optional<double> wipe_path_support_score(
     const Polyline &polyline, Point wipe_start,
     const AABBTreeLines::LinesDistancer<Line> &target_distancer,
     const AABBTreeLines::LinesDistancer<Line> &all_support_distancer,
@@ -557,7 +564,7 @@ static bool stays_on_material_side(
     // offset must retain most of its requested clearance from the current
     // external wall. Otherwise a tight turn may send an initially correct path
     // back onto that wall, or make the opposite-side candidate look supported.
-    const double clearance_tolerance = std::max(4. * SCALED_EPSILON, 0.25 * effective_offset);
+    const double clearance_tolerance = wipe_tolerance(effective_offset, 0.25);
     const double minimum_clearance = effective_offset - clearance_tolerance;
     const auto has_clearance = [&](const Point &point) {
         return current_perimeter_distancer.distance_from_lines<false>(point) +
@@ -579,21 +586,6 @@ static bool stays_on_material_side(
         previous = path.points[index];
     }
     return true;
-}
-
-bool wipe_path_is_supported(const Polyline &polyline, Point wipe_start,
-                            const Lines &other_perimeter_lines, const Lines &current_perimeter_lines,
-                            double max_distance)
-{
-    if (other_perimeter_lines.empty())
-        return false;
-
-    AABBTreeLines::LinesDistancer<Line> target_distancer(other_perimeter_lines);
-    Lines all_support_lines = other_perimeter_lines;
-    all_support_lines.insert(all_support_lines.end(), current_perimeter_lines.begin(), current_perimeter_lines.end());
-    AABBTreeLines::LinesDistancer<Line> all_support_distancer(std::move(all_support_lines));
-    return wipe_path_support_score(
-        polyline, wipe_start, target_distancer, all_support_distancer, max_distance).has_value();
 }
 
 bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point seam_end, Point wipe_start,
@@ -645,7 +637,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     // Orca: allow only the contact needed to leave the extrusion endpoint. A
     // connector that meets the current wall again is a seam-gap retrace, even
     // if the rest of the non-extruding wipe remains over printed material.
-    const double contact_tolerance = std::max(4. * SCALED_EPSILON, 0.1 * effective_offset);
+    const double contact_tolerance = wipe_tolerance(effective_offset);
 
     struct Candidate {
         Polyline path;
@@ -702,7 +694,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (! translated_wipe_path(source, source_start, source_end, wipe_start,
                                    candidate_translation, max_wipe_length))
             return std::nullopt;
-        const double candidate_tolerance = std::max(4. * SCALED_EPSILON, 0.1 * candidate_offset);
+        const double candidate_tolerance = wipe_tolerance(candidate_offset);
         return validate_candidate(std::move(source), source_start, candidate_tolerance,
                                   candidate_support_offset / support_distance);
     };
@@ -725,7 +717,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         Polyline path;
         if (! store_wipe_path(path, seam_start, Polyline{wipe_start, destination}, max_wipe_length))
             return std::nullopt;
-        const double candidate_tolerance = std::max(4. * SCALED_EPSILON, 0.1 * candidate_offset);
+        const double candidate_tolerance = wipe_tolerance(candidate_offset);
         return validate_candidate(std::move(path), origin, candidate_tolerance, direction, false);
     };
     std::optional<Candidate> direct = direct_candidate(seam_end, toward_support);
@@ -749,7 +741,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     // cusp. Candidates pointing away from the actual inner wall are rejected
     // during validation; among the remaining paths, prefer the one whose first
     // point is materially closer to that wall.
-    const double direction_change_margin = std::max(4. * SCALED_EPSILON, 0.1 * effective_offset);
+    const double direction_change_margin = wipe_tolerance(effective_offset);
     std::optional<Candidate> selected = std::move(preferred);
     if (alternate) {
         if (! selected || alternate->support_score + direction_change_margin < selected->support_score)
@@ -764,7 +756,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
 
     // Orca: prefer a complete reverse wipe over a forward fallback that had to
     // stop at the corner. Equal-length paths keep the normal forward behavior.
-    const double length_margin = std::max(4. * SCALED_EPSILON, 0.1 * max_wipe_length);
+    const double length_margin = wipe_tolerance(max_wipe_length);
     if (reversed && (! selected || reversed->path_length > selected->path_length + length_margin))
         selected = std::move(reversed);
     if (! selected)
