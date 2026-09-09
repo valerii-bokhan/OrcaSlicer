@@ -1526,6 +1526,8 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
     else
         presets_list.emplace_back(presets_);
 
+    const bool multiple_extruders = wxGetApp().preset_bundle->get_printer_extruder_count() > 1;
+
     // Display a dialog showing the dirty options in a human readable form.
     for (PresetCollection* presets : presets_list)
     {
@@ -1589,7 +1591,8 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 if (option.category.compare(0, 9, L"Extruder ") == 0)
                     category = _L("Extruder");
                 wxString variant_label = L(extruder_variant->values[variant_index]);
-                if (extruder_id && variant_index < extruder_id->size() && extruder_id->values[variant_index] > 0) {
+                // Orca: An extruder name only disambiguates variants on printers with multiple extruders.
+                if (multiple_extruders && extruder_id && variant_index < extruder_id->size() && extruder_id->values[variant_index] > 0) {
                     const wxString extruder_name = Tab::translate_category(
                         wxString::Format("Extruder %d", extruder_id->values[variant_index]), Preset::TYPE_PRINTER);
                     variant_label = extruder_name + ": " + variant_label;
