@@ -1493,6 +1493,54 @@ TEST_CASE("Mild overhang speed is reached at ten percent unsupported", "[Extrusi
         REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_overhang_speed, 0.1));
 }
 
+// Orca: A control point configured above the wall speed is an explicit speed-up request for
+// that overhang band: the band prints faster than the wall while the supported wall keeps its
+// speed. The fixture's volumetric limit (5 mm³/s over a 0.0045 mm³/mm flow) sits far above these
+// requests, so the band prints at the requested speed itself.
+TEST_CASE("Overhang control points above the wall speed speed up that band", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const double requested     = GENERATE(80., 120.);
+    CAPTURE(wall_generator, requested);
+
+    // The ten-percent geometry reads exactly at the mild control point, so the overhanging face
+    // prints at the requested speed while the supported face keeps the wall speed.
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::string gcode = shallow_overhang_gcode(wall_generator, requested, ten_percent_top_offset);
+    const std::vector<double> overhang_feed_rates  = shallow_face_feed_rates(gcode, true);
+    const std::vector<double> supported_feed_rates = shallow_face_feed_rates(gcode, false);
+    info_feed_rates("speed-up overhang", overhang_feed_rates);
+    info_feed_rates("supported face", supported_feed_rates);
+
+    REQUIRE_FALSE(overhang_feed_rates.empty());
+    REQUIRE_FALSE(supported_feed_rates.empty());
+    for (double feed_rate : overhang_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(requested, 0.1));
+    for (double feed_rate : supported_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed, 0.1));
+}
+
+// Orca: A speed-up request beyond the volumetric flow limit prints at the limit, not the request.
+TEST_CASE("Overhang speed-up requests are capped to the volumetric flow limit", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    CAPTURE(wall_generator);
+
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::string gcode = shallow_overhang_gcode(wall_generator, 2000., ten_percent_top_offset);
+    const std::vector<double> overhang_feed_rates = shallow_face_feed_rates(gcode, true);
+    info_feed_rates("capped speed-up overhang", overhang_feed_rates);
+
+    REQUIRE_FALSE(overhang_feed_rates.empty());
+    // The fixture caps every extrusion at filament_max_volumetric_speed / mm3_per_mm; the nominal
+    // flow (width 0.23, height 0.02) puts that around 1107 mm/s, far below the request. Arachne
+    // varies the width slightly along the wall, so compare relatively.
+    const double mm3_per_mm = shallow_layer_height * (shallow_wall_width - shallow_layer_height * (1. - 0.25 * PI));
+    const double volumetric_cap = 5. / mm3_per_mm;
+    for (double feed_rate : overhang_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinRel(volumetric_cap, 0.05));
+}
+
 // Orca: Cover both the default size-preserving path and metadata generation without speed slowdown.
 TEST_CASE("Overhang preview metadata is optional and independent of overhang speed",
           "[ExtrusionProcessor][Regression]")

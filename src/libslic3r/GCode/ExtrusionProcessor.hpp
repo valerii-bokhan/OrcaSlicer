@@ -598,7 +598,11 @@ public:
                                                            float                               ext_perimeter_speed,
                                                            float                               original_speed,
                                                            bool                                slowdown_for_curled_edges,
-                                                           bool                                estimate_overhang_metadata = false)
+                                                           bool                                estimate_overhang_metadata = false,
+                                                           // Orca: Ceiling for explicit speed-up requests (control points configured above the wall
+                                                           // speed). Slowdown control points stay capped to the actual path speed. The default keeps
+                                                           // the legacy behavior: nothing may exceed the path speed.
+                                                           float                               speedup_ceiling          = 0.f)
     {
         size_t                               speed_sections_count = std::min(overlaps.values.size(), speeds.values.size());
         std::vector<std::pair<float, float>> speed_sections;
@@ -638,6 +642,13 @@ public:
                 // Interpolation begins at the preceding point. Sampling requires a positive
                 // threshold even when this point is at zero unsupported width.
                 smallest_distance_with_lower_speed = starts_at_supported_boundary && section.second < original_speed - 1.f ?
+                    std::max(speed_sections[i - 1].first, supported_distance_tolerance) : section.first;
+                found = true;
+            } else if (speedup_ceiling > 0.f && section.second > ext_perimeter_speed + 1.f) {
+                // Orca: An explicit speed-up control point, configured above the wall speed the
+                // percentages resolve against. Its ramp toward the higher speed begins at the
+                // preceding point, so the path is split there just like for a slowdown.
+                smallest_distance_with_lower_speed = i > 0 ?
                     std::max(speed_sections[i - 1].first, supported_distance_tolerance) : section.first;
                 found = true;
             }
@@ -729,12 +740,22 @@ public:
             }	
 
             float extrusion_speed = std::min(calculate_speed(curr.distance), calculate_speed(next.distance));
-            // ORCA: Clamp resulting speed to lowest of calculated speed based on the overhang values and the current speed
-            // Fixes bug where resulting overhang speed is higher than the current speed due to (for example) volumetric flow limits.
-            extrusion_speed = std::min(extrusion_speed, original_speed);
+            // ORCA: Clamp the interpolated speed to what the path may actually print at. With no
+            // explicit speed-up request (speedup_ceiling <= 0) that is the path speed, as before:
+            // it fixes overhang speeds above the current speed due to (for example) volumetric flow
+            // limits. A speed-up request (a control point configured above the wall speed) raises
+            // the ceiling to speedup_ceiling, which the caller already capped to the volumetric limit.
+            extrusion_speed = std::min(extrusion_speed, std::max(original_speed, speedup_ceiling));
             
-            if(slowdown_for_curled_edges) {
-                float curled_speed = calculate_speed(artificial_distance_to_curled_lines);
+            if(slowdown_for_curled_edges && artificial_distance_to_curled_lines > 0.0f) {
+                // Orca: Only a DETECTED curled edge may adjust the speed, and it may only slow it
+                // down. calculate_speed(0) is the path speed, so applying the min with no curl
+                // nearby cancelled every explicit speed-up request whenever curled-edge slowdown
+                // was enabled. And on a speed-up curve a larger artificial distance reads a
+                // HIGHER speed, which would turn a severe curl into an acceleration; capping the
+                // reading at the path speed keeps it a slowdown. For the legacy slowdown-only
+                // curves both refinements are no-ops: their readings never exceed the path speed.
+                float curled_speed = std::min(calculate_speed(artificial_distance_to_curled_lines), original_speed);
             	extrusion_speed       = std::min(curled_speed, extrusion_speed); // adjust extrusion speed based on what is smallest - the calculated overhang speed or the artificial curled speed
             }
             

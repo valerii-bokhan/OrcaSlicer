@@ -1922,7 +1922,8 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Target speed when 10% of the wall line width is unsupported. Between 0% and 10%, "
                      "speed is linearly interpolated from the actual wall speed to this value. "
                      "For example, a wall speed of 60 mm/s and a target of 30 mm/s give 45 mm/s at 5% overhang. "
-                     "A value of 0 keeps the original wall speed throughout this range.");
+                     "A value of 0 keeps the original wall speed throughout this range. "
+                     "A value above the wall speed is a speed-up request for this range, capped to the maximum volumetric speed.");
     def->sidetext = L("mm/s or %");
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
@@ -1938,7 +1939,8 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Target speed when 25% of the wall line width is unsupported. Between 10% and 25%, "
                      "speed is linearly interpolated from the preceding control point to this value. "
                      "A value of 0 uses the base wall speed at this control point; adjacent control points "
-                     "can still cause slowdown within the range.");
+                     "can still cause slowdown within the range. "
+                     "A value above the wall speed is a speed-up request for this range, capped to the maximum volumetric speed.");
     def->sidetext = L("mm/s or %");
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
@@ -1954,7 +1956,8 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Target speed when 50% of the wall line width is unsupported. Between 25% and 50%, "
                      "speed is linearly interpolated from the preceding control point to this value. "
                      "A value of 0 uses the base wall speed at this control point; adjacent control points "
-                     "can still cause slowdown within the range.");
+                     "can still cause slowdown within the range. "
+                     "A value above the wall speed is a speed-up request for this range, capped to the maximum volumetric speed.");
     def->sidetext = L("mm/s or %");
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
@@ -1970,7 +1973,8 @@ void PrintConfigDef::init_fff_params()
     def->tooltip = L("Target speed when 75% of the wall line width is unsupported. Between 50% and 75%, "
                      "speed is linearly interpolated from the preceding control point to this value. "
                      "A value of 0 uses the base wall speed at this control point; adjacent control points "
-                     "can still cause slowdown within the range.");
+                     "can still cause slowdown within the range. "
+                     "A value above the wall speed is a speed-up request for this range, capped to the maximum volumetric speed.");
     def->sidetext = L("mm/s or %");
     def->ratio_over = "outer_wall_speed";
     def->min = 0;
@@ -1989,7 +1993,8 @@ void PrintConfigDef::init_fff_params()
                      "if Slow down for curled perimeters is disabled. If enabled, this value is used throughout "
                      "the 87% to 100% range. "
                      "A value of 0 uses the base wall speed at this control point; adjacent control points "
-                     "can still cause slowdown within the range.");
+                     "can still cause slowdown within the range. "
+                     "A value above the wall speed is a speed-up request for this range, capped to the maximum volumetric speed.");
     def->sidetext = L("mm/s or %");
     def->ratio_over = "outer_wall_speed";
     def->min = 0;

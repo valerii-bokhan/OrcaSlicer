@@ -8249,8 +8249,31 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                 overhang_overlap_levels.values.insert(overhang_overlap_levels.values.begin(), 100);
             }
 
+            // Orca: A control point configured above the wall speed it resolves against is an
+            // explicit speed-up request for that overhang band (overhangs can print faster than
+            // the wall, e.g. cooled overhangs on a slow outer wall). Collect the highest requested
+            // speed as the ceiling, capped to the volumetric flow limit; without any speed-up
+            // request the ceiling stays at the path speed, preserving the legacy behavior where
+            // the curve could only slow the path down.
+            const double volumetric_speed = (FILAMENT_CONFIG(filament_max_volumetric_speed) > 0) ?
+                FILAMENT_CONFIG(filament_max_volumetric_speed) / _mm3_per_mm : 0.;
+            double speedup_max_speed = 0.;
+            for (const FloatOrPercent &overhang_speed_setting : {
+                     NOZZLE_CONFIG(overhang_0_4_speed),
+                     NOZZLE_CONFIG(overhang_1_4_speed),
+                     NOZZLE_CONFIG(overhang_2_4_speed),
+                     NOZZLE_CONFIG(overhang_3_4_speed),
+                     NOZZLE_CONFIG(overhang_4_4_speed)}) {
+                const double overhang_speed = overhang_speed_setting.get_abs_value(ref_speed);
+                if (overhang_speed > ref_speed + 0.5) {
+                    speedup_max_speed = std::max(speedup_max_speed,
+                        volumetric_speed > 0. ? std::min(overhang_speed, volumetric_speed) : overhang_speed);
+                }
+            }
+
             new_points = m_extrusion_quality_estimator.estimate_extrusion_quality(
-                path, overhang_overlap_levels, dynamic_overhang_speeds, ref_speed, speed, slow_curled_perimeters, emit_overhangs);
+                path, overhang_overlap_levels, dynamic_overhang_speeds, ref_speed, speed, slow_curled_perimeters, emit_overhangs,
+                static_cast<float>(speedup_max_speed));
             variable_speed = std::any_of(new_points.begin(), new_points.end(),
                                          [speed](const ProcessedPoint &p) { return fabs(double(p.speed) - speed) > 1; }); // Ignore small speed variations (under 1mm/sec)
             if (FILAMENT_CONFIG(enable_overhang_bridge_fan) && m_enable_cooling_markers) {
