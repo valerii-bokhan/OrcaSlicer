@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -336,7 +337,8 @@ DynamicPrintConfig shallow_overhang_config(const char *wall_generator, double mi
         {"zaa_enabled", "0"},
         {"outer_wall_speed", shallow_outer_wall_speed},
         {"inner_wall_speed", shallow_outer_wall_speed},
-        {"overhang_1_4_speed", mild_overhang_speed},
+        {"overhang_0_4_speed", mild_overhang_speed},
+        {"overhang_1_4_speed", "0"},
         {"overhang_2_4_speed", "0"},
         {"overhang_3_4_speed", "0"},
         {"overhang_4_4_speed", "0"},
@@ -373,6 +375,16 @@ std::vector<float> overhang_percentages(const std::string &gcode)
         position = end != gcode.c_str() + position ? size_t(end - gcode.c_str()) : position;
     }
     return percentages;
+}
+
+std::vector<double> shallow_face_feed_rates(const std::string &gcode, bool overhanging_face)
+{
+    return outer_wall_feed_rates(gcode, [overhanging_face](const GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        if (line.new_Z(self) < 3. * shallow_layer_height || line.new_Z(self) > 0.9)
+            return false;
+        const double middle_y = 0.5 * (self.y() + line.new_Y(self));
+        return overhanging_face ? middle_y < 1. : middle_y > 9.;
+    });
 }
 
 // Reports the matched move count alongside the extremes, so a filter that selected nothing is
@@ -1446,6 +1458,245 @@ TEST_CASE("Supported vertical walls keep their normal speed", "[ExtrusionProcess
     REQUIRE(slowest >= caged_slow_speed * MM_PER_MIN);
 }
 
+TEST_CASE("Mild overhang speed is interpolated from the supported wall speed", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    const std::string gcode = shallow_overhang_gcode(wall_generator, shallow_overhang_speed);
+    const std::vector<double> overhang_feed_rates = shallow_face_feed_rates(gcode, true);
+    const std::vector<double> supported_feed_rates = shallow_face_feed_rates(gcode, false);
+    info_feed_rates("shallow overhang", overhang_feed_rates);
+    info_feed_rates("supported shallow-prism face", supported_feed_rates);
+
+    REQUIRE_FALSE(overhang_feed_rates.empty());
+    REQUIRE_FALSE(supported_feed_rates.empty());
+
+    // The front face moves 0.01mm per layer, about 4.3% of the 0.23mm line width.
+    // Linear interpolation from 60mm/s at 0% to 30mm/s at 10% rounds to 47mm/s.
+    for (double feed_rate : overhang_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(47., 0.1));
+    for (double feed_rate : supported_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed, 0.1));
+}
+
+TEST_CASE("Mild overhang speed is reached at ten percent unsupported", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::vector<double> feed_rates = shallow_face_feed_rates(
+        shallow_overhang_gcode(wall_generator, shallow_overhang_speed, ten_percent_top_offset), true);
+
+    REQUIRE_FALSE(feed_rates.empty());
+    for (double feed_rate : feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_overhang_speed, 0.1));
+}
+
+TEST_CASE("Overhang control points above the wall speed speed up that band", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const char *setting = GENERATE("80", "120", "200%");
+    const double unsupported = GENERATE(0.05, 0.1);
+    const double requested = std::string(setting) == "80" ? 80. : 120.;
+    CAPTURE(wall_generator, setting, unsupported);
+
+    DynamicPrintConfig config = shallow_overhang_config(wall_generator, 0., true, false);
+    config.set_deserialize_strict("overhang_0_4_speed", setting);
+    Print print;
+    Model model;
+    init_print({shallow_overhang_mesh(unsupported * shallow_wall_width / shallow_layer_height)},
+        print, model, config, nullptr, false);
+    const std::string exported = gcode(print);
+    const std::vector<double> overhang_feed_rates  = shallow_face_feed_rates(exported, true);
+    const std::vector<double> supported_feed_rates = shallow_face_feed_rates(exported, false);
+    info_feed_rates("speed-up overhang", overhang_feed_rates);
+    info_feed_rates("supported face", supported_feed_rates);
+
+    REQUIRE_FALSE(overhang_feed_rates.empty());
+    REQUIRE_FALSE(supported_feed_rates.empty());
+    const double expected = shallow_outer_wall_speed + (requested - shallow_outer_wall_speed) * unsupported / 0.1;
+    for (double feed_rate : overhang_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(expected, 0.1));
+    for (double feed_rate : supported_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed, 0.1));
+}
+
+TEST_CASE("Overhang speed-ups preserve small perimeter limits at other control points", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const double mild_speed = GENERATE(30., 120.);
+    const double unsupported = GENERATE(0.25, 0.375, 0.5);
+    CAPTURE(wall_generator, mild_speed, unsupported);
+    DynamicPrintConfig config = shallow_overhang_config(wall_generator, mild_speed, true, false);
+    config.set_deserialize_strict({
+        {"small_perimeter_speed", "50%"}, {"small_perimeter_threshold", "100"},
+        {"resonance_avoidance", "0"}, {"overhang_1_4_speed", "0"}, {"overhang_2_4_speed", "50"},
+    });
+    Print print;
+    Model model;
+    init_print({shallow_overhang_mesh(unsupported * shallow_wall_width / shallow_layer_height)},
+        print, model, config, nullptr, false);
+    const auto feed_rates = shallow_face_feed_rates(gcode(print), true);
+    REQUIRE_FALSE(feed_rates.empty());
+    for (double feed_rate : feed_rates)
+        CHECK_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed * 0.5, 0.1));
+}
+
+TEST_CASE("Overhang interpolation respects local speed requests and path limits", "[ExtrusionProcessor][Regression]")
+{
+    const size_t control = GENERATE(0, 1, 2, 3, 4);
+    const bool descending = GENERATE(false, true);
+    const float fraction = GENERATE(0.f, 0.5f, 1.f);
+    const float max_speed = GENERATE(0.f, 90.f, std::numeric_limits<float>::infinity());
+    const float requested = GENERATE(20.f, 120.f);
+    CAPTURE(control, descending, fraction, max_speed, requested);
+    constexpr float wall_speed = 60.f;
+    constexpr float actual_speed = 30.f;
+    constexpr float width = 0.4f;
+    const float unsupported[] = {0.f, 0.1f, 0.25f, 0.5f, 0.75f, 0.87f, 1.f};
+    const size_t interval = control + (descending ? 1 : 0);
+    const float distance = width * (unsupported[interval] + fraction * (unsupported[interval + 1] - unsupported[interval]));
+
+    Print print;
+    Model model;
+    init_print({cube(1.0)}, print, model);
+    PrintObject *object = print.get_object(0);
+    Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
+    Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    upper->lower_layer = lower;
+    lower->lslices = {ExPolygon(Polygon{Point::new_scale(0, 0), Point::new_scale(40, 0),
+        Point::new_scale(40, 10), Point::new_scale(0, 10)})};
+    ExtrusionQualityEstimator estimator;
+    estimator.set_current_object(object);
+    estimator.prepare_for_new_layer(object, upper);
+    ExtrusionPath path(erExternalPerimeter, 0.08, width, 0.2f);
+    path.polyline.points = {Point3::new_scale(1, width * 0.5 - distance, 0),
+        Point3::new_scale(39, width * 0.5 - distance, 0)};
+    ConfigOptionFloatsOrPercents speeds({{actual_speed, false}, {wall_speed, false}, {wall_speed, false},
+        {wall_speed, false}, {wall_speed, false}, {wall_speed, false}, {120.f, false}});
+    speeds.values[control + 1] = FloatOrPercent{requested, false};
+    const auto points = estimator.estimate_extrusion_quality(path, ConfigOptionPercents({100, 90, 75, 50, 25, 13, 0}),
+        speeds, wall_speed, actual_speed, false, false, max_speed);
+    // Slowdown-only intervals retain the old post-interpolation clamp. Speed-up intervals
+    // interpolate from the limited neighbor, and apply the volumetric limit afterwards.
+    const bool speedup = requested > wall_speed && max_speed > actual_speed;
+    float neighbor_speed = control == 0 ? actual_speed : wall_speed;
+    if (descending)
+        neighbor_speed = control == 4 ? 120.f : wall_speed;
+    if (speedup)
+        neighbor_speed = std::min(neighbor_speed, actual_speed);
+    const float from_speed = descending ? requested : neighbor_speed;
+    const float to_speed = descending ? neighbor_speed : requested;
+    const float expected = std::min(from_speed + fraction * (to_speed - from_speed), speedup ? max_speed : actual_speed);
+    REQUIRE(points.size() >= 2);
+    for (const auto &point : points)
+        CHECK_THAT(point.speed, Catch::Matchers::WithinAbs(expected, 0.1));
+
+    // A high bridge speed is not an overhang speed-up request.
+    path.polyline.points = {Point3::new_scale(1, -width * 0.5, 0), Point3::new_scale(39, -width * 0.5, 0)};
+    const auto bridge_points = estimator.estimate_extrusion_quality(path, ConfigOptionPercents({100, 90, 75, 50, 25, 13, 0}),
+        speeds, wall_speed, actual_speed, false, false, max_speed);
+    REQUIRE(bridge_points.size() >= 2);
+    for (const auto &point : bridge_points)
+        CHECK_THAT(point.speed, Catch::Matchers::WithinAbs(actual_speed, 0.1));
+}
+
+TEST_CASE("Speed-up sampling retains an overhang between supported endpoints", "[ExtrusionProcessor][Regression]")
+{
+    const float requested = GENERATE(30.f, 50.f, 120.f);
+    const float actual_speed = GENERATE(30.f, 60.f);
+    const double shoulder = GENERATE(2., 8.);
+    CAPTURE(requested, actual_speed, shoulder);
+    Print print;
+    Model model;
+    init_print({cube(1.0)}, print, model);
+    PrintObject *object = print.get_object(0);
+    Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
+    Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    upper->lower_layer = lower;
+    lower->lslices = {ExPolygon(Polygon{
+        Point::new_scale(0, 0), Point::new_scale(shoulder, 0), Point::new_scale(shoulder, 0.04),
+        Point::new_scale(40 - shoulder, 0.04), Point::new_scale(40 - shoulder, 0), Point::new_scale(40, 0),
+        Point::new_scale(40, 10), Point::new_scale(0, 10)})};
+    ExtrusionQualityEstimator estimator;
+    estimator.set_current_object(object);
+    estimator.prepare_for_new_layer(object, upper);
+    ExtrusionPath path(erExternalPerimeter, 0.08, 0.4f, 0.2f);
+    path.polyline.points = {Point3::new_scale(1, 0.2, 0), Point3::new_scale(39, 0.2, 0)};
+    const auto points = estimator.estimate_extrusion_quality(path, ConfigOptionPercents({100, 90, 50, 0}),
+        ConfigOptionFloatsOrPercents({{actual_speed, false}, {requested, false}, {20.f, false}, {60.f, false}}),
+        60.f, actual_speed, false, false, 200.f);
+    bool checked_interior = false;
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        if (unscale_(points[i].p.x()) <= 20. && unscale_(points[i + 1].p.x()) >= 20.) {
+            const float expected = requested > 60.f ? requested : std::min(requested, actual_speed);
+            CHECK_THAT(points[i].speed, Catch::Matchers::WithinAbs(expected, 0.1));
+            // Fan control still needs the old overlap samples when a small-perimeter limit
+            // masks the curve's speed changes. The supported probes bracket this wider shoulder.
+            if (requested == 50.f && actual_speed == 30.f && shoulder == 8.)
+                CHECK_THAT(points[i].overlap, Catch::Matchers::WithinAbs(0.9f, 0.001));
+            checked_interior = true;
+        }
+    }
+    REQUIRE(checked_interior);
+    if (requested > 60.f) {
+        CHECK_THAT(points.front().speed, Catch::Matchers::WithinAbs(actual_speed, 0.1));
+        CHECK_THAT(points[points.size() - 2].speed, Catch::Matchers::WithinAbs(actual_speed, 0.1));
+    }
+}
+
+TEST_CASE("Only detected curled edges cancel an overhang speed-up", "[ExtrusionProcessor][Regression]")
+{
+    const bool curled = GENERATE(false, true);
+    const bool slowdown = GENERATE(false, true);
+    CAPTURE(curled, slowdown);
+    Print print;
+    Model model;
+    init_print({cube(1.0)}, print, model);
+    PrintObject *object = print.get_object(0);
+    Layer *lower = object->add_layer(0, 0.2, 0.2, 0.1);
+    Layer *upper = object->add_layer(1, 0.2, 0.4, 0.3);
+    upper->lower_layer = lower;
+    lower->lslices = {ExPolygon(Polygon{Point::new_scale(0, 0), Point::new_scale(40, 0),
+        Point::new_scale(40, 10), Point::new_scale(0, 10)})};
+    if (curled)
+        lower->curled_lines = {CurledLine(Point::new_scale(1, 0.16), Point::new_scale(39, 0.16), 0.2f)};
+    ExtrusionQualityEstimator estimator;
+    estimator.set_current_object(object);
+    estimator.prepare_for_new_layer(object, upper);
+    ExtrusionPath path(erExternalPerimeter, 0.08, 0.4f, 0.2f);
+    path.polyline.points = {Point3::new_scale(1, 0.16, 0), Point3::new_scale(39, 0.16, 0)};
+    const auto points = estimator.estimate_extrusion_quality(path, ConfigOptionPercents({100, 90, 0}),
+        ConfigOptionFloatsOrPercents({{60.f, false}, {120.f, false}, {60.f, false}}),
+        60.f, 60.f, slowdown, false, 200.f);
+    REQUIRE(points.size() >= 2);
+    for (size_t i = 0; i + 1 < points.size(); ++i)
+        CHECK_THAT(points[i].speed, Catch::Matchers::WithinAbs(curled && slowdown ? 60.f : 120.f, 0.1));
+}
+
+// Orca: A speed-up request beyond the volumetric flow limit prints at the limit, not the request.
+TEST_CASE("Overhang speed-up requests are capped to the volumetric flow limit", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    CAPTURE(wall_generator);
+
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::string gcode = shallow_overhang_gcode(wall_generator, 2000., ten_percent_top_offset);
+    const std::vector<double> overhang_feed_rates = shallow_face_feed_rates(gcode, true);
+    info_feed_rates("capped speed-up overhang", overhang_feed_rates);
+
+    REQUIRE_FALSE(overhang_feed_rates.empty());
+    // The fixture caps every extrusion at filament_max_volumetric_speed / mm3_per_mm; the nominal
+    // flow (width 0.23, height 0.02) puts that around 1107 mm/s, far below the request. Arachne
+    // varies the width slightly along the wall, so compare relatively.
+    const double mm3_per_mm = shallow_layer_height * (shallow_wall_width - shallow_layer_height * (1. - 0.25 * PI));
+    const double volumetric_cap = 5. / mm3_per_mm;
+    for (double feed_rate : overhang_feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinRel(volumetric_cap, 0.05));
+}
+
 // Orca: Cover both the default size-preserving path and metadata generation without speed slowdown.
 TEST_CASE("Overhang preview metadata is optional and independent of overhang speed",
           "[ExtrusionProcessor][Regression]")
@@ -1463,6 +1714,58 @@ TEST_CASE("Overhang preview metadata is optional and independent of overhang spe
     REQUIRE_FALSE(percentages.empty());
     REQUIRE(std::all_of(percentages.begin(), percentages.end(), [](float percentage) { return percentage >= 0.f && percentage <= 100.f; }));
     REQUIRE(std::any_of(percentages.begin(), percentages.end(), [](float percentage) { return std::abs(percentage - 10.f) <= 0.2f; }));
+}
+
+TEST_CASE("Disabled mild overhang speed preserves the wall speed", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    const std::vector<double> feed_rates = shallow_face_feed_rates(shallow_overhang_gcode(wall_generator, 0.), true);
+
+    REQUIRE_FALSE(feed_rates.empty());
+    for (double feed_rate : feed_rates)
+        REQUIRE_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(shallow_outer_wall_speed, 0.1));
+}
+
+TEST_CASE("Mild overhang interpolation respects resonance-adjusted wall speeds", "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const bool curled = GENERATE(false, true);
+    const double reference_speed = GENERATE(80., 100.);
+    const char *mild_setting = GENERATE("0", "30", "30%");
+    CAPTURE(wall_generator, curled, reference_speed, mild_setting);
+
+    // Resonance avoidance lowers 80 to 70 and raises 100 to 120. A 5% overhang
+    // must interpolate from that adjusted speed, or preserve it when disabled.
+    const double actual_speed = reference_speed == 80. ? 70. : 120.;
+    const bool disabled = std::string(mild_setting) == "0";
+    const double target_speed = std::string(mild_setting) == "30%" ? reference_speed * 0.3 : 30.;
+    const double expected_speed = disabled ? actual_speed : std::round(0.5 * (actual_speed + target_speed));
+    DynamicPrintConfig config = shallow_overhang_config(wall_generator, 0., true, false);
+    config.set_deserialize_strict({
+        {"outer_wall_speed", reference_speed},
+        {"overhang_0_4_speed", mild_setting},
+        {"resonance_avoidance", "1"},
+        {"min_resonance_avoidance_speed", "70"},
+        {"max_resonance_avoidance_speed", "120"},
+        {"small_perimeter_threshold", "0"},
+        {"enable_overhang_bridge_fan", "0"},
+        {"slowdown_for_curled_perimeters", curled ? "1" : "0"},
+    });
+    constexpr double five_percent_top_offset = 0.05 * shallow_wall_width / shallow_layer_height;
+    Print print;
+    Model model;
+    init_print({shallow_overhang_mesh(five_percent_top_offset)}, print, model, config, nullptr, false);
+    const std::string exported = gcode(print);
+    const auto overhang_speeds = shallow_face_feed_rates(exported, true);
+    const auto supported_speeds = shallow_face_feed_rates(exported, false);
+    REQUIRE_FALSE(overhang_speeds.empty());
+    REQUIRE_FALSE(supported_speeds.empty());
+    for (double feed_rate : overhang_speeds)
+        CHECK_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(expected_speed, 0.1));
+    for (double feed_rate : supported_speeds)
+        CHECK_THAT(feed_rate / MM_PER_MIN, Catch::Matchers::WithinAbs(actual_speed, 0.1));
 }
 
 // The slope's top edge falls mid layer, so the first layer above it still stands 0.179mm proud of the layer
