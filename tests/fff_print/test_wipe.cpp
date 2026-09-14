@@ -192,6 +192,42 @@ TEST_CASE("Changing inward wipe settings preserves the sliced geometry", "[Wipe]
     CHECK_FALSE(print.is_step_done(psGCodeExport));
 }
 
+TEST_CASE("Retraction and pressure advance calibration suppress inward wipe overrides", "[Wipe][Regression]")
+{
+    const auto mode = GENERATE(CalibMode::Calib_None, CalibMode::Calib_PA_Tower,
+                              CalibMode::Calib_Auto_PA_Line, CalibMode::Calib_Retraction_tower,
+                              CalibMode::Calib_Flow_Rate);
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const bool per_object = GENERATE(false, true);
+    INFO("calibration mode: " << int(mode) << ", wall generator: " << wall_generator
+         << ", per-object override: " << per_object);
+
+    const auto trajectories = [&](bool inward) {
+        DynamicPrintConfig config = wipe_config(wall_generator, inward && !per_object);
+        const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{
+            {{"wipe_inward", inward ? "1" : "0"}}
+        };
+        Print print;
+        Model model;
+        init_print({make_cube(10., 10., 1.)}, print, model, config, per_object ? &overrides : nullptr);
+        Calib_Params params;
+        params.mode = mode;
+        params.start = 0.2;
+        params.end = 0.4;
+        params.step = 0.1;
+        print.set_calib_params(params);
+        return wipe_destinations(gcode(print));
+    };
+
+    const auto regular = trajectories(false);
+    const auto inward = trajectories(true);
+    REQUIRE_FALSE(regular.empty());
+    REQUIRE_FALSE(inward.empty());
+    // Other calibration modes and ordinary prints must still honor the option.
+    const bool should_differ = mode == CalibMode::Calib_None || mode == CalibMode::Calib_Flow_Rate;
+    CHECK(trajectories_differ(regular, inward) == should_differ);
+}
+
 TEST_CASE("Inactive inward wipe settings preserve the exported trajectory", "[Wipe][Regression]")
 {
     const char *wall_generator = GENERATE("classic", "arachne");

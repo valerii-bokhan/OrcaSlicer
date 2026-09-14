@@ -2,10 +2,14 @@
 
 ## Purpose and scope
 
-Wipe inward reduces visible seam artifacts by moving the external-wall wipe
-toward adjacent printed material. For an outer contour this is an inward move;
-for a hole it is a move away from the hole. The path must remain supported by
-material that is already present when the wipe executes.
+Wipe inward reduces reheating of fresh plastic and visible seam artifacts by
+moving the hot nozzle toward adjacent printed material during the external-wall
+wipe. Wipe marks are especially visible at layer heights below 0.1 mm.
+The option applies only to wipes after external walls, including walls around
+holes. It does not offset wipes after inner walls, infill or supports. For an
+outer contour the move is inward; for a hole it is away from the hole, toward
+the surrounding material. The path must remain supported by material that is
+already present when the wipe executes.
 
 The operation belongs to G-code generation. It uses extrusion paths, their actual
 widths and their print order. Changing its settings invalidates G-code export
@@ -26,6 +30,10 @@ the local geometry may contain fewer walls, and walls scheduled later do not
 provide support. Outer/Inner wall order therefore normally retains the regular
 wipe path.
 
+Retraction and pressure advance calibrations disable inward wiping so it cannot
+mask the behavior being measured. The calibration settings turn it off, and
+G-code generation enforces this even if a profile or object override enables it.
+
 ## Path selection and support
 
 The planner identifies an adjacent inner perimeter on the material side of the
@@ -40,9 +48,30 @@ complete executable path, including its connector from the nozzle position,
 against the current and earlier printed perimeters. Nearby endpoints alone do
 not establish support across a gap.
 
-An accepted candidate replaces the stored wipe path as a whole. If no supported
-candidate exists, the regular path is retained. This fallback covers missing
-adjacent walls, degenerate geometry and unsupported connectors.
+An accepted candidate replaces the stored wipe path as a whole. A short direct
+inward move is also eligible when longer candidates fail validation.
+
+## Fallback to the regular wipe
+
+The original wipe path is retained when:
+
+- No suitable adjacent inner wall has already been printed near the seam. This
+  includes single-wall areas, locally missing inner walls and normally Outer/Inner
+  wall order. A distant wall or a wall on the air side does not qualify.
+- The requested or available offset, or the configured wipe distance, is zero
+  or too small at the geometry's coordinate precision.
+- Degenerate geometry prevents construction of a usable candidate, or all
+  candidates fail the checks for printed support, direction, wall clearance or
+  the connector from the actual nozzle position. This can occur at tight corners,
+  narrow features or seam gaps.
+
+Corners and seam gaps do not automatically trigger fallback: an offset,
+translated, reversed or short direct inward path may still be valid. The regular
+wipe is retained only when no candidate is accepted.
+
+Fallback uses the path and retraction rules for `wipe_inward` disabled.
+Wipe while retracting must still be enabled for a wipe to occur; `wipe_on_loops`
+remains controlled by its own setting.
 
 ## Interaction with Wipe on loop
 
