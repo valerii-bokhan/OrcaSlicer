@@ -461,14 +461,19 @@ TEST_CASE("Wipe on loops preserves the corner move with inward wipe disabled", "
 {
     const char *wall_generator = GENERATE("classic", "arachne");
     const char *nozzle_diameter = GENERATE("0.4", "0.8");
+    const char *comments = GENERATE("0", "1");
+    CAPTURE(comments);
     INFO("wall generator: " << wall_generator << ", nozzle diameter: " << nozzle_diameter);
     // A closed square gives a 90-degree material-side corner at the seam.
     DynamicPrintConfig config = wipe_config(wall_generator, false, "50%", "0", true);
-    config.set_deserialize_strict({{"nozzle_diameter", nozzle_diameter}, {"seam_position", "nearest"}});
+    config.set_deserialize_strict({{"nozzle_diameter", nozzle_diameter}, {"seam_position", "nearest"},
+                                   {"gcode_comments", comments}});
     const std::string output = slice({make_cube(10., 10., 1.)}, config);
     const auto &role_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role);
+    const auto &wipe_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Start);
     ExtrusionRole role = erNone;
     std::vector<Vec2d> loop;
+    bool after_extrusion = false;
     size_t moves = 0;
     GCodeReader parser;
     parser.apply_config(config);
@@ -476,16 +481,24 @@ TEST_CASE("Wipe on loops preserves the corner move with inward wipe disabled", "
         if (line.comment().find(role_tag) == 0) {
             role = ExtrusionEntity::string_to_role(line.comment().substr(role_tag.size()));
             loop.clear();
+            after_extrusion = false;
         }
+        if (line.comment().find(wipe_tag) == 0)
+            after_extrusion = false;
         if (role != erExternalPerimeter)
             return;
         if (line.extruding(self) && line.dist_XY(self) > EPSILON) {
             if (loop.empty())
                 loop.emplace_back(self.x(), self.y());
             loop.emplace_back(line.new_X(self), line.new_Y(self));
-        }
-        if (line.comment().find("move inwards before travel") == std::string_view::npos)
+            after_extrusion = true;
             return;
+        }
+        // The loop move is the first non-extruding XY move after the external
+        // wall and before the reserved wipe marker, regardless of comment text.
+        if (!after_extrusion || line.dist_XY(self) <= EPSILON)
+            return;
+        after_extrusion = false;
 
         ++moves;
         INFO("layer Z: " << self.z());
@@ -508,22 +521,42 @@ TEST_CASE("Wipe on loops preserves the corner move with inward wipe disabled", "
 TEST_CASE("Inward wipe remains valid after wipe on loops moves the nozzle", "[Wipe][Regression]")
 {
     const char *wall_generator = GENERATE("classic", "arachne");
+    const char *comments = GENERATE("0", "1");
+    CAPTURE(comments);
     INFO("wall generator: " << wall_generator);
 
-    const std::string loop_move = slice(
-        {make_cube(10., 10., 1.)}, wipe_config(wall_generator, false, "50%", "10%", true));
-    const std::string combined = slice(
-        {make_cube(10., 10., 1.)}, wipe_config(wall_generator, true, "50%", "10%", true));
-    const std::string inward_only = slice(
-        {make_cube(10., 10., 1.)}, wipe_config(wall_generator, true));
+    DynamicPrintConfig config = wipe_config(wall_generator, false, "50%", "10%", true);
+    config.set_deserialize_strict({{"gcode_comments", comments}});
+    const std::string loop_move = slice({make_cube(10., 10., 1.)}, config);
+    config.set_deserialize_strict({{"wipe_inward", "1"}});
+    const std::string combined = slice({make_cube(10., 10., 1.)}, config);
+    config.set_deserialize_strict({{"wipe_on_loops", "0"}});
+    const std::string inward_only = slice({make_cube(10., 10., 1.)}, config);
 
     for (const std::string *output : {&loop_move, &combined}) {
         INFO("wipe_inward: " << (output == &combined));
         std::map<double, std::vector<Vec2d>> loop_moves_by_layer;
+        const auto &role_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role);
+        const auto &wipe_tag = GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Wipe_Start);
+        ExtrusionRole role = erNone;
+        bool after_extrusion = false;
         GCodeReader parser;
+        parser.apply_config(config);
         parser.parse_buffer(*output, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
-            if (line.comment().find("move inwards before travel") != std::string_view::npos)
+            if (line.comment().find(role_tag) == 0) {
+                role = ExtrusionEntity::string_to_role(line.comment().substr(role_tag.size()));
+                after_extrusion = false;
+            }
+            if (line.comment().find(wipe_tag) == 0)
+                after_extrusion = false;
+            if (role != erExternalPerimeter || line.dist_XY(self) <= EPSILON)
+                return;
+            if (line.extruding(self)) {
+                after_extrusion = true;
+            } else if (after_extrusion) {
                 loop_moves_by_layer[line.new_Z(self)].emplace_back(line.new_X(self), line.new_Y(self));
+                after_extrusion = false;
+            }
         });
 
         // The 1 mm cube at 0.2 mm layer height has one external loop on each of five layers.

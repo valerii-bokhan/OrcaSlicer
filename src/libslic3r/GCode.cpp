@@ -7253,7 +7253,8 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
                                 const std::string&          description,
                                 double                      speed,
                                 const ExtrusionEntitiesPtr& region_perimeters,
-                                const Point*                start_point)
+                                const Point*                start_point,
+                                const WipeInwardSupport*     wipe_support)
 {
     // get a copy; don't modify the orientation of the original loop object otherwise
     // next copies (if any) would not detect the correct orientation
@@ -7500,8 +7501,11 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
         // Orca: loop wipe paths retain print direction. Their material side is
         // therefore left for CCW contours and right for CW contours, with the
         // result inverted for holes. Only external perimeters are eligible.
-        if (m_config.wipe_inward && m_config.wipe_inward_distance.value > 0 &&
-            loop.role() == erExternalPerimeter && region_perimeters.size() > 1 &&
+        // Calibration overrides are applied during extrusion, after the region
+        // context was created. Check the effective setting again at execution.
+        if (m_config.wipe_inward && m_config.wipe_inward_distance.value > 0. &&
+            wipe_support != nullptr && !wipe_support->inner_lines.empty() &&
+            loop.role() == erExternalPerimeter &&
             m_wipe.path.points.size() >= 2) {
             // Orca: use the actual extrusion width from the path, not the config
             // value — outer_wall_line_width=0 (Auto) would make get_abs_value
@@ -7518,22 +7522,6 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
                 // Orca: Wipe::wipe() replaces points[0] with last_pos and executes
                 // from points[1]. The helper preserves that sentinel and atomically
                 // replaces the remaining points, or leaves the path untouched.
-                Lines printed_perimeter_lines;
-                Lines target_perimeter_lines;
-                // Orca: collection order is print order. Only geometry before
-                // loop_ref is physically available to support the wipe.
-                const auto current_perimeter = std::find(
-                    region_perimeters.begin(), region_perimeters.end(), &loop_ref);
-                if (current_perimeter != region_perimeters.end()) {
-                    for (auto it = region_perimeters.begin(); it != current_perimeter; ++it) {
-                        const ExtrusionEntity *entity = *it;
-                        const Lines lines = entity->as_polyline().lines();
-                        printed_perimeter_lines.insert(printed_perimeter_lines.end(), lines.begin(), lines.end());
-                        if (is_internal_perimeter(entity->role()))
-                            target_perimeter_lines.insert(target_perimeter_lines.end(), lines.begin(), lines.end());
-                    }
-                }
-
                 // Orca: a configured wall count does not guarantee that Arachne
                 // generated an adjacent wall for this particular loop. Only
                 // earlier entities are considered because later walls have
@@ -7545,7 +7533,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
                 if (offset_wipe_path_toward_support(
                         inward_path, seam_start, seam_end, wipe_start,
                         wipe_offset_direction(is_ccw, is_hole), offset_dist, max_wipe_length,
-                        target_perimeter_lines, printed_perimeter_lines,
+                        wipe_support->inner_lines, wipe_support->printed_lines,
                         m_wipe.path.lines(), support_distance)) {
                     m_wipe.path = std::move(inward_path);
                     wipe_inward_applied = true;
@@ -7610,14 +7598,15 @@ std::string GCode::extrude_multi_path(const ExtrusionMultiPath& multipath, const
 std::string GCode::extrude_entity(const ExtrusionEntity&      entity,
                                   const std::string&          description,
                                   double                      speed,
-                                  const ExtrusionEntitiesPtr& region_perimeters)
+                                  const ExtrusionEntitiesPtr& region_perimeters,
+                                  const WipeInwardSupport*     wipe_support)
 {
     if (const ExtrusionPath* path = dynamic_cast<const ExtrusionPath*>(&entity))
         return this->extrude_path(*path, description, speed);
     else if (const ExtrusionMultiPath* multipath = dynamic_cast<const ExtrusionMultiPath*>(&entity))
         return this->extrude_multi_path(*multipath, description, speed);
     else if (const ExtrusionLoop* loop = dynamic_cast<const ExtrusionLoop*>(&entity))
-        return this->extrude_loop(*loop, description, speed, region_perimeters);
+        return this->extrude_loop(*loop, description, speed, region_perimeters, nullptr, wipe_support);
     else
         throw Slic3r::InvalidArgument("Invalid argument supplied to extrude()");
     return "";
@@ -7667,8 +7656,19 @@ std::string GCode::extrude_perimeters(const Print &print, const std::vector<Obje
                 : (m_config.is_infill_first == is_infill_first);
             if (!should_print) continue;
 
-            for (const ExtrusionEntity* ee : region.perimeters)
-                gcode += this->extrude_entity(*ee, "perimeter", -1., region.perimeters);
+            // Build the printed prefix once in emission order, scoped to this
+            // region. Disabled or zero-length wipes need no support geometry.
+            std::optional<WipeInwardSupport> wipe_support;
+            if (m_wipe.enable && FILAMENT_CONFIG(wipe) && m_config.wipe_inward &&
+                m_config.wipe_inward_distance.value > 0. &&
+                scale_(FILAMENT_CONFIG(wipe_distance)) > SCALED_EPSILON)
+                wipe_support.emplace();
+            for (const ExtrusionEntity* ee : region.perimeters) {
+                gcode += this->extrude_entity(*ee, "perimeter", -1., region.perimeters,
+                                             wipe_support ? &*wipe_support : nullptr);
+                if (wipe_support)
+                    wipe_support->append(*ee);
+            }
         }
     return gcode;
 }
