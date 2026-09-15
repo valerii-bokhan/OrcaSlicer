@@ -560,6 +560,85 @@ TEST_CASE("Stored wipe path prefers support on the material side of a seam gap",
     CHECK(path.points[1].y() > seam_end.y());
 }
 
+TEST_CASE("Stored wipe path rejects an outward offset at a reflex seam gap", "[WipePath][Regression]")
+{
+    const double offset = GENERATE(0.2, 0.4); // 50% and 100% of a 0.4 mm wall.
+    const double mirror = GENERATE(1., -1.);
+    CAPTURE(offset, mirror);
+    const auto point = [mirror](double x, double y) { return Point::new_scale(mirror * x, y); };
+    const Point seam_start = point(0., 0.);
+    const double gap_component = 0.04 / std::sqrt(2.); // Default 10% seam gap for a 0.4 mm nozzle.
+    const Point seam_end = point(-gap_component, -gap_component);
+    const Polyline original{seam_start, point(0., -10.)};
+    const Lines support{Line(point(0.4, -10.), point(0.4, 1.))};
+    const int preferred_dir = mirror > 0. ? +1 : -1;
+
+    // The inward miter backtracks. The opposite offset can still be supported
+    // by the outer bead, so support alone must not make it an inward candidate.
+    Polyline outward = original;
+    REQUIRE(offset_wipe_path(outward, seam_start, seam_end, seam_end,
+                             -preferred_dir, scale_(offset), scale_(2.)));
+    Lines all_support = support;
+    const Lines current = original.lines();
+    all_support.insert(all_support.end(), current.begin(), current.end());
+    REQUIRE(wipe_path_support_score(outward, seam_end,
+        LinesDistancer<Line>(support), LinesDistancer<Line>(all_support), scale_(0.4)).has_value());
+    REQUIRE(mirror * outward.points[1].x() < 0.);
+
+    Polyline path = original;
+    if (offset_wipe_path_toward_support(path, seam_start, seam_end, seam_end,
+            preferred_dir, scale_(offset), scale_(2.), support, support, current, scale_(0.4))) {
+        REQUIRE(path.points.size() >= 2);
+        CHECK(mirror * path.points[1].x() > 0.);
+    } else {
+        CHECK(path.points == original.points);
+    }
+
+    // An inward pre-move provides a clear connector to the direct fallback.
+    // The fix must retain this usable inward path, rather than reject all wipes.
+    const Point wipe_start = point(0.05, -0.04);
+    path = original;
+    REQUIRE(offset_wipe_path_toward_support(path, seam_start, seam_end, wipe_start,
+        preferred_dir, scale_(offset), scale_(2.), support, support, current, scale_(0.4)));
+    REQUIRE(path.points.size() == 2);
+    CHECK(mirror * path.points[1].x() > mirror * wipe_start.x());
+}
+
+TEST_CASE("Inward wipe checks the material side after leaving an open wall endpoint", "[WipePath][Regression]")
+{
+    const bool require_clearance = GENERATE(false, true);
+    CAPTURE(require_clearance);
+    const auto point = [](double x, double y) { return Point::new_scale(x, y); };
+    const Point seam = point(0., 0.);
+    const LinesDistancer<Line> current(Lines{Line(seam, point(2., 0.))});
+    const LinesDistancer<Line> support(Lines{Line(point(0., 0.4), point(2., 0.4))});
+    Polyline path{seam, point(0.1, 0.2), point(0.5, 0.2), point(-0.2, 0.2)};
+    REQUIRE(wipe_path_stays_on_material_side(
+        path, seam, Vec2d(0., 1.), support, current, scale_(0.2), require_clearance));
+
+    // Rounding the open endpoint keeps 0.2 mm of unsigned clearance while
+    // moving to the air side. Checking only the first direction cannot catch it.
+    path.points.push_back(point(-0.2, -0.2));
+    path.points.push_back(point(0.5, -0.2));
+    REQUIRE_FALSE(wipe_path_stays_on_material_side(
+        path, seam, Vec2d(0., 1.), support, current, scale_(0.2), require_clearance));
+}
+
+TEST_CASE("Direct inward fallbacks check the material side without requiring clearance", "[WipePath][Regression]")
+{
+    const auto point = [](double x, double y) { return Point::new_scale(x, y); };
+    const Point seam = point(0., 0.);
+    const LinesDistancer<Line> current(Lines{Line(point(-2., 0.), point(2., 0.))});
+    const LinesDistancer<Line> support(Lines{Line(point(-2., 0.4), point(2., 0.4))});
+    REQUIRE(wipe_path_stays_on_material_side(
+        Polyline{seam, point(0., 0.05)}, seam, Vec2d(0., 1.), support, current, scale_(0.2), false));
+
+    // Even if the construction's initial direction points outward, the nearby
+    // inner wall still identifies the material side independently of that hint.
+    REQUIRE_FALSE(wipe_path_stays_on_material_side(
+        Polyline{seam, point(0., -0.05)}, seam, Vec2d(0., -1.), support, current, scale_(0.2), false));
+}
+
 TEST_CASE("Stored wipe path may return to the current wall after reaching an earlier wall", "[WipePath]")
 {
     const coord_t s = scale_(1.0);

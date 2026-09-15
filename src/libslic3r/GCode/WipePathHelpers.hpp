@@ -49,6 +49,18 @@ std::optional<double> wipe_path_support_score(
     const AABBTreeLines::LinesDistancer<Line> &all_support_distancer,
     double max_distance);
 
+// Validate the initial inward direction and the local material side along the
+// executable path, using the inner wall to orient the open current wall's
+// normals. Clearance is optional for clipped corners and short direct fallbacks;
+// the material-side check is mandatory. The straight connector is checked by
+// its initial direction and separately by support and intersection validation.
+// path_start is the construction origin; points[0] is only a storage sentinel.
+bool wipe_path_stays_on_material_side(
+    const Polyline &path, Point path_start, const Vec2d &support_direction,
+    const AABBTreeLines::LinesDistancer<Line> &target_perimeter_distancer,
+    const AABBTreeLines::LinesDistancer<Line> &current_perimeter_distancer,
+    double effective_offset, bool require_clearance);
+
 // Orca: identify the adjacent inner perimeter from the outgoing wall, excluding
 // support on the air side of a closed zero-gap loop. Clamp the requested offset
 // to the distance from the seam end to that support, then select the safest
