@@ -90,7 +90,7 @@ remains controlled by its own setting.
 
 `wipe_on_loops` is an independent option that makes a short move before leaving
 an external loop. It can operate with `wipe_inward` disabled. When both options
-are enabled, its destination is the starting position for the deferred wipe.
+are enabled, its destination is the starting position for the inward wipe.
 
 The loop move samples the outgoing and incoming paths by distance across path
 boundaries. The sampling distance is bounded by the nozzle diameter and one
@@ -104,16 +104,20 @@ The nozzle position stored by G-code generation must match the emitted loop
 move. Both travel planning and wipe execution depend on this position, including
 when Wipe inward is disabled.
 
-## Deferred execution and retraction
+## Execution and retraction
 
 The stored wipe path uses a sentinel first point. Execution starts from the
 actual nozzle position and proceeds to the second stored point. Path selection,
 support validation and wipe-length calculation must all use this same executable
 geometry, especially after a Wipe on loop move.
 
-Accepting an inward path marks the deferred wipe as requiring retraction. This
-ensures that a short travel to the next wall, including an unchanged XY position,
-does not discard the accepted path through the normal minimum-travel check.
+An accepted inward path executes at the end of the external loop, after any
+Wipe on loop move, without retracting filament. It consumes the stored path and
+updates the nozzle position before travel planning. A short travel to the next
+wall cannot discard this wipe or force a retraction or Z-hop. Subsequent travel
+uses the normal minimum-travel threshold and retraction/lift settings from the
+new position. The regular wipe, including fallback, remains deferred until a
+normal retraction uses it.
 
 Retraction is divided into portions before, during and after wiping. The amount
 that can be retracted during the wipe depends on its executable length, wipe
@@ -121,7 +125,8 @@ speed and the active filament's retraction speed. Fractional retraction speeds
 are retained in this calculation. For a 2 mm wipe at 100 mm/s and a retraction
 speed of 25.5 mm/s, the wipe can retract 0.51 mm. With a total retraction of 0.8 mm
 and both before/after percentages set to zero, the remaining 0.29 mm is retracted
-before wiping. This rule applies with Wipe inward enabled or disabled.
+before wiping. This split applies to regular deferred wipes, including fallback;
+an accepted inward wipe executes separately without retraction.
 
 ## Implementation and verification
 
@@ -135,7 +140,7 @@ before wiping. This rule applies with Wipe inward enabled or disabled.
   degenerate paths, contour and hole orientations, and exact loop-move geometry
   across path subdivisions.
 - [FFF tests](../../tests/fff_print/test_wipe.cpp) cover emitted trajectories,
-  fallback, deferred retraction and export invalidation. With Wipe inward
-  disabled, they check the loop move's direction and magnitude for Classic and
-  Arachne, the subsequent wipe's start and length, and fractional retraction
-  splitting in absolute and relative E modes.
+  fallback, minimum-travel retraction and Z-hop rules, and export invalidation.
+  With Wipe inward disabled, they check the loop move's direction and magnitude
+  for Classic and Arachne, the subsequent wipe's start and length, and fractional
+  retraction splitting in absolute and relative E modes.

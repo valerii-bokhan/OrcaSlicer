@@ -7492,6 +7492,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
         paths.back().polyline.points.size() >= 2)
         wipe_on_loops_dest = wipe_on_loops_destination(paths, scale_(nozzle_diameter), is_ccw, is_hole);
 
+    bool wipe_inward_applied = false;
     // Orca: store loop paths in print order because inward offsets use this orientation.
     if (m_wipe.enable && FILAMENT_CONFIG(wipe)) {
         m_wipe.update_path(paths);
@@ -7547,10 +7548,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
                         target_perimeter_lines, printed_perimeter_lines,
                         m_wipe.path.lines(), support_distance)) {
                     m_wipe.path = std::move(inward_path);
-                    // Orca: a short move to the remaining inner wall would normally
-                    // discard this deferred wipe. Force its retraction now so seam
-                    // placement cannot decide whether wipe_inward is honored.
-                    m_wipe.require_retraction();
+                    wipe_inward_applied = true;
                 }
             }
         }
@@ -7562,6 +7560,12 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
             this->point_to_gcode(*wipe_on_loops_dest), 0, "move inwards before travel", true);
         this->set_last_pos(*wipe_on_loops_dest);
     }
+
+    // Execute the accepted path before another extrusion replaces it. Wiping
+    // must not force retraction or Z-hop across a short travel to the next wall.
+    // Ordinary travel planning decides whether to retract from the new position.
+    if (wipe_inward_applied)
+        gcode += m_wipe.wipe(*this, 0.);
 
     return gcode;
 }
@@ -7904,10 +7908,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     // Move to first point of extrusion path
     // path is 2D. But in slope lift case, lift z is done in travel_to function.
     // Add m_need_change_layer_lift_z when change_layer in case of no lift if m_last_pos is equal to path.first_point() by chance
-    // Consume an inward wipe even when the next extrusion shares its endpoint.
     Point first_point = path.first_point();
     if (!m_last_pos_defined || m_last_pos.to_point() != first_point || m_need_change_layer_lift_z ||
-        slope_need_z_travel || m_wipe.requires_retraction()) {
+        slope_need_z_travel) {
         const bool _last_pos_undefined = !m_last_pos_defined;
 
         double z = DBL_MAX;
@@ -9099,7 +9102,6 @@ std::string GCode::travel_to(const Point& point, ExtrusionRole role, std::string
     // multi-hop travel path inside the configuration space
     if (m_config.reduce_crossing_wall
         && !m_avoid_crossing_perimeters.disabled_once()
-        && travel.first_point() != travel.last_point()
         && m_writer.is_current_position_clear())
         //BBS: don't generate detour travel paths when current position is unclea
     {
@@ -9210,11 +9212,7 @@ LiftType GCode::to_lift_type(ZHopType z_hop_types) {
 
 bool GCode::needs_retraction(const Polyline &travel, ExtrusionRole role, LiftType& lift_type)
 {
-    // Orca: an inward external-wall wipe is otherwise discarded by the short
-    // travel to a remaining inner wall. Let it continue through the normal
-    // external-perimeter retraction path, which also selects the proper lift type.
-    if (travel.length() < scale_(FILAMENT_CONFIG(retraction_minimum_travel)) &&
-        ! m_wipe.requires_retraction()) {
+    if (travel.length() < scale_(FILAMENT_CONFIG(retraction_minimum_travel))) {
         // skip retraction if the move is shorter than the configured threshold
         return false;
     }
