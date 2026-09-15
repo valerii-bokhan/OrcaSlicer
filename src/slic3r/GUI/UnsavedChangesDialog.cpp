@@ -1595,9 +1595,9 @@ void UnsavedChangesDialog::update_tree(Preset::Type type, PresetCollection* pres
                 if (multiple_extruders && extruder_id && variant_index < extruder_id->size() && extruder_id->values[variant_index] > 0) {
                     const wxString extruder_name = Tab::translate_category(
                         wxString::Format("Extruder %d", extruder_id->values[variant_index]), Preset::TYPE_PRINTER);
-                    variant_label = extruder_name + ": " + variant_label;
+                    variant_label = extruder_name + " (" + variant_label + ")";
                 }
-                category += " {" + variant_label + "}";
+                category = variant_label + ": " + category;
             }
 
             /*m_tree->Append(opt_key, type, option.category_local, option.group_local, option.label_local,
