@@ -48,8 +48,21 @@ complete executable path, including its connector from the nozzle position,
 against the current and earlier printed perimeters. Nearby endpoints alone do
 not establish support across a gap.
 
+Material-side validation applies with or without a seam gap. Along each
+candidate, local wall normals point toward the adjacent printed inner wall;
+samples on the opposite side are rejected even when they remain close enough
+to the external wall to pass the support check. This uses the open wall geometry
+without treating it as a closed polygon. Full paths at a zero-gap seam also
+retain clearance from the external wall after their initial connector. At a
+clipped corner, another branch can be closer than the requested offset, so
+material-side and support checks apply without that additional clearance rule.
+
 An accepted candidate replaces the stored wipe path as a whole. A short direct
-inward move is also eligible when longer candidates fail validation.
+inward move is also eligible when longer candidates fail validation. It may
+waive full wall clearance, but must pass the material-side check. It takes
+priority over the alternate offset when the preferred and translated paths
+are unusable. A longer reversed path may replace the selected candidate only
+when its distance to the target inner wall is no worse within tolerance.
 
 ## Fallback to the regular wipe
 

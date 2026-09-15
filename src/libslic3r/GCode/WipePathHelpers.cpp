@@ -545,34 +545,69 @@ static Lines material_side_support_lines(const Polyline &path, Point seam, int p
     return result;
 }
 
-static bool stays_on_material_side(
+bool wipe_path_stays_on_material_side(
     const Polyline &path, Point path_start, const Vec2d &support_direction,
-    AABBTreeLines::LinesDistancer<Line> &current_perimeter_distancer,
+    const AABBTreeLines::LinesDistancer<Line> &target_perimeter_distancer,
+    const AABBTreeLines::LinesDistancer<Line> &current_perimeter_distancer,
     double effective_offset, bool require_clearance)
 {
-    if (path.points.size() < 2 || support_direction.norm() <= EPSILON)
+    if (path.points.size() < 2 || support_direction.norm() <= EPSILON ||
+        target_perimeter_distancer.get_lines().empty() || current_perimeter_distancer.get_lines().empty() ||
+        effective_offset <= SCALED_EPSILON)
         return false;
 
     const Vec2d initial_offset = (path.points[1] - path_start).cast<double>();
     if (initial_offset.norm() <= SCALED_EPSILON ||
         initial_offset.normalized().dot(support_direction.normalized()) < min_support_alignment)
         return false;
-    if (! require_clearance)
-        return true;
-
     // Orca: after the connector has left the extrusion endpoint, an inward
     // offset must retain most of its requested clearance from the current
     // external wall. Otherwise a tight turn may send an initially correct path
     // back onto that wall, or make the opposite-side candidate look supported.
     const double clearance_tolerance = wipe_tolerance(effective_offset, 0.25);
     const double minimum_clearance = effective_offset - clearance_tolerance;
-    const auto has_clearance = [&](const Point &point) {
-        return current_perimeter_distancer.distance_from_lines<false>(point) +
-            4. * SCALED_EPSILON >= minimum_clearance;
+    const Lines &lines = current_perimeter_distancer.get_lines();
+    const auto left_normal = [](const Line &line) -> Vec2d {
+        const Vec2d edge = (line.b - line.a).cast<double>();
+        if (edge.norm() <= SCALED_EPSILON)
+            return Vec2d::Zero();
+        return Vec2d(-edge.y(), edge.x()).normalized();
+    };
+    const auto on_material_side = [&](const Point &point, bool check_clearance) {
+        const auto [distance, line_index, nearest] =
+            current_perimeter_distancer.distance_from_lines_extra<false>(point);
+        if (line_index >= lines.size())
+            return false;
+        const Line &line = lines[line_index];
+        Vec2d normal = left_normal(line);
+        // At a shared vertex use both incident edges, so the result does not
+        // depend on which equally close edge the AABB query happens to return.
+        const Line &previous = lines[(line_index + lines.size() - 1) % lines.size()];
+        const Line &next = lines[(line_index + 1) % lines.size()];
+        if ((nearest - line.a.cast<double>()).norm() <= SCALED_EPSILON && previous.b == line.a)
+            normal += left_normal(previous);
+        if ((nearest - line.b.cast<double>()).norm() <= SCALED_EPSILON && next.a == line.b)
+            normal += left_normal(next);
+        if (normal.norm() <= EPSILON)
+            return false;
+
+        // An open or self-touching wall has no reliable polygon-wide sign.
+        // Orient its local normal toward the neighbouring printed inner wall,
+        // then test the candidate on that side at every sample.
+        normal.normalize();
+        const Point wall_point = nearest.cast<coord_t>();
+        const Vec2d support_point = std::get<2>(
+            target_perimeter_distancer.distance_from_lines_extra<false>(wall_point));
+        const double support_side = (support_point - nearest).dot(normal);
+        if (std::abs(support_side) <= 4. * SCALED_EPSILON)
+            return false;
+        const double side = (point.cast<double>() - nearest).dot(normal) * (support_side > 0. ? 1. : -1.);
+        return side >= -4. * SCALED_EPSILON &&
+            (! check_clearance || distance + 4. * SCALED_EPSILON >= minimum_clearance);
     };
 
     Point previous = path.points[1];
-    if (! has_clearance(previous))
+    if (! on_material_side(previous, require_clearance))
         return false;
     for (size_t index = 2; index < path.points.size(); ++index) {
         const Vec2d segment = (path.points[index] - previous).cast<double>();
@@ -580,7 +615,7 @@ static bool stays_on_material_side(
         for (size_t sample = 1; sample <= samples; ++sample) {
             const Point point = (previous.cast<double>() +
                 segment * (double(sample) / double(samples))).cast<coord_t>();
-            if (! has_clearance(point))
+            if (! on_material_side(point, require_clearance))
                 return false;
         }
         previous = path.points[index];
@@ -650,14 +685,19 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     const auto validate_candidate = [&](Polyline path, Point path_start,
                                         double path_contact_tolerance,
                                         const Vec2d &candidate_support_direction,
+                                        double candidate_offset,
                                         bool require_clearance = true) -> std::optional<Candidate> {
         // Orca: backtracking indicates a wrong join only across a nonzero gap.
         // A closed zero-gap offset may initially turn back at its miter while
         // still remaining on the supported material side of the perimeter.
         const bool backtracks_across_gap = seam_start != seam_end && starts_by_backtracking(path, wipe_start);
-        const bool material_side = seam_start != seam_end ||
-            stays_on_material_side(path, path_start, candidate_support_direction,
-                                   current_perimeter_distancer, effective_offset, require_clearance);
+        // At a clipped corner another branch of the current wall may be closer
+        // than the requested offset. Preserve the zero-gap clearance rule, but
+        // check direction and local material side independently for every gap.
+        const bool material_side = wipe_path_stays_on_material_side(
+            path, path_start, candidate_support_direction,
+            support_distancer, current_perimeter_distancer, candidate_offset,
+            require_clearance && seam_start == seam_end);
         const bool connector_clear = initial_connector_is_clear(
             path, wipe_start, path_start, current_perimeter_distancer, path_contact_tolerance);
         if (backtracks_across_gap || ! material_side || ! connector_clear)
@@ -675,7 +715,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (! offset_wipe_path(path, seam_start, seam_end, wipe_start, dir,
                                effective_offset, max_wipe_length))
             return std::nullopt;
-        return validate_candidate(std::move(path), seam_start, contact_tolerance, support_direction);
+        return validate_candidate(std::move(path), seam_start, contact_tolerance, support_direction, effective_offset);
     };
 
     std::optional<Candidate> preferred = offset_candidate(preferred_dir);
@@ -696,7 +736,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
             return std::nullopt;
         const double candidate_tolerance = wipe_tolerance(candidate_offset);
         return validate_candidate(std::move(source), source_start, candidate_tolerance,
-                                  candidate_support_offset / support_distance);
+                                  candidate_support_offset / support_distance, candidate_offset);
     };
 
     std::optional<Candidate> translated = translated_candidate(polyline, seam_start, seam_end, toward_support);
@@ -718,7 +758,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (! store_wipe_path(path, seam_start, Polyline{wipe_start, destination}, max_wipe_length))
             return std::nullopt;
         const double candidate_tolerance = wipe_tolerance(candidate_offset);
-        return validate_candidate(std::move(path), origin, candidate_tolerance, direction, false);
+        return validate_candidate(std::move(path), origin, candidate_tolerance, direction, candidate_offset, false);
     };
     std::optional<Candidate> direct = direct_candidate(seam_end, toward_support);
 
@@ -743,21 +783,23 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
     // point is materially closer to that wall.
     const double direction_change_margin = wipe_tolerance(effective_offset);
     std::optional<Candidate> selected = std::move(preferred);
-    if (alternate) {
-        if (! selected || alternate->support_score + direction_change_margin < selected->support_score)
-            selected = std::move(alternate);
-    }
     if (translated) {
         if (! selected || translated->support_score + direction_change_margin < selected->support_score)
             selected = std::move(translated);
     }
     if (! selected)
         selected = std::move(direct);
+    // Prefer a direct inward move when the normal offset cannot be used.
+    // An alternate offset is eligible only after the same material-side checks.
+    if (! selected)
+        selected = std::move(alternate);
 
     // Orca: prefer a complete reverse wipe over a forward fallback that had to
     // stop at the corner. Equal-length paths keep the normal forward behavior.
     const double length_margin = wipe_tolerance(max_wipe_length);
-    if (reversed && (! selected || reversed->path_length > selected->path_length + length_margin))
+    if (reversed && (! selected ||
+        (reversed->path_length > selected->path_length + length_margin &&
+         reversed->support_score <= selected->support_score + direction_change_margin)))
         selected = std::move(reversed);
     if (! selected)
         return false;
