@@ -192,7 +192,9 @@ static bool starts_by_backtracking(const Polyline &path, Point actual_start)
     // the executable connector, particularly after a wipe_on_loops pre-move.
     const Vec2d connector = (path.points[1] - actual_start).cast<double>();
     const Vec2d outgoing = (path.points[2] - path.points[1]).cast<double>();
-    return connector.dot(outgoing) < 0.;
+    // An inward connector may be perpendicular to the outgoing offset edge.
+    // Rounded joins must not turn that right angle into a false backtrack.
+    return connector.dot(outgoing) < -4. * SCALED_EPSILON * outgoing.norm();
 }
 
 // Orca: sample the outgoing perimeter without copying or clipping its full loop.
@@ -299,6 +301,28 @@ bool offset_wipe_path(Polyline &polyline, Point seam_start, Point seam_end, Poin
         actual_path.points.reserve(offset_points.size() + 1);
         actual_path.points.push_back(wipe_start);
         actual_path.points.insert(actual_path.points.end(), offset_points.begin(), offset_points.end());
+
+        // A loop pre-move may advance past an otherwise valid offset join.
+        // Enter at the nozzle's projection instead of returning to the join.
+        // Do not repair a join that already backtracks across the seam gap;
+        // the caller must still validate wall crossings, material side and support.
+        if (seam_start != seam_end && wipe_start != seam_start && wipe_start != seam_end &&
+            starts_by_backtracking(actual_path, wipe_start) && ! starts_by_backtracking(actual_path, seam_end)) {
+            size_t entry = 1;
+            while (entry + 1 < actual_path.points.size()) {
+                const Vec2d edge = (actual_path.points[entry + 1] - actual_path.points[entry]).cast<double>();
+                const double projection = (wipe_start - actual_path.points[entry]).cast<double>().dot(edge);
+                if (projection <= 0.)
+                    break;
+                if (projection < edge.squaredNorm()) {
+                    actual_path.points[entry] = (actual_path.points[entry].cast<double>() +
+                        edge * (projection / edge.squaredNorm())).cast<coord_t>();
+                    break;
+                }
+                ++entry;
+            }
+            actual_path.points.erase(actual_path.points.begin() + 1, actual_path.points.begin() + entry);
+        }
 
         if (seam_start != seam_end && wipe_start == seam_end &&
             starts_by_backtracking(actual_path, wipe_start)) {
@@ -701,7 +725,10 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         double path_length;
     };
 
-    const auto validate_candidate = [&](Polyline path, Point path_start,
+    // Direction and wall contact have different origins after a loop pre-move.
+    // Keep the construction's wall endpoint for intersection checks even when
+    // the candidate's direction must be checked from the current nozzle position.
+    const auto validate_candidate = [&](Polyline path, Point path_start, Point direction_start,
                                         double path_contact_tolerance,
                                         const Vec2d &candidate_support_direction,
                                         double candidate_offset,
@@ -714,7 +741,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         // than the requested offset. Preserve the zero-gap clearance rule, but
         // check direction and local material side independently for every gap.
         const bool material_side = wipe_path_stays_on_material_side(
-            path, path_start, candidate_support_direction,
+            path, direction_start, candidate_support_direction,
             support_distancer, current_perimeter_distancer, candidate_offset,
             require_clearance && seam_start == seam_end);
         const bool connector_clear = initial_connector_is_clear(
@@ -734,7 +761,8 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (! offset_wipe_path(path, seam_start, seam_end, wipe_start, dir,
                                effective_offset, max_wipe_length))
             return std::nullopt;
-        return validate_candidate(std::move(path), seam_start, contact_tolerance, support_direction, effective_offset);
+        return validate_candidate(std::move(path), seam_start, seam_start,
+                                  contact_tolerance, support_direction, effective_offset);
     };
 
     std::optional<Candidate> preferred = offset_candidate(preferred_dir);
@@ -754,7 +782,7 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
                                    candidate_translation, max_wipe_length))
             return std::nullopt;
         const double candidate_tolerance = wipe_tolerance(candidate_offset);
-        return validate_candidate(std::move(source), source_start, candidate_tolerance,
+        return validate_candidate(std::move(source), source_start, source_start, candidate_tolerance,
                                   candidate_support_offset / support_distance, candidate_offset);
     };
 
@@ -777,10 +805,14 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         if (! store_wipe_path(path, seam_start, Polyline{wipe_start, destination}, max_wipe_length))
             return std::nullopt;
         const double candidate_tolerance = wipe_tolerance(candidate_offset);
-        return validate_candidate(std::move(path), origin, candidate_tolerance, direction, candidate_offset, false);
+        // Check the executed direction from the nozzle after any loop pre-move,
+        // but retain the wall origin for the connector's intersection checks.
+        return validate_candidate(std::move(path), origin, wipe_start,
+                                  candidate_tolerance, direction, candidate_offset, false);
     };
     std::optional<Candidate> direct = direct_candidate(seam_end, toward_support);
 
+    const double length_margin = wipe_tolerance(max_wipe_length);
     std::optional<Candidate> reversed;
     if (seam_start != seam_end && polyline.last_point() == seam_end) {
         // Orca: when a large gap straddles a sharp corner, connecting the
@@ -791,9 +823,26 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
         reversed_source.reverse();
         const std::optional<Vec2d> reversed_support_offset = support_offset_at_start(
             reversed_source, seam_end, true, support_distancer, max_support_distance);
-        if (reversed_support_offset)
-            reversed = translated_candidate(std::move(reversed_source), seam_end, seam_end,
-                                             *reversed_support_offset);
+        if (reversed_support_offset) {
+            reversed = translated_candidate(reversed_source, seam_end, seam_end, *reversed_support_offset);
+            // A translated reverse path can backtrack or leave the material on
+            // a curved wall. Offset the incoming wall itself when translation
+            // cannot supply a complete wipe, retaining all candidate checks.
+            if (! reversed || reversed->path_length + length_margin < max_wipe_length) {
+                const double reverse_offset = std::min(offset_dist, reversed_support_offset->norm());
+                if (reverse_offset > SCALED_EPSILON &&
+                    offset_wipe_path(reversed_source, seam_end, seam_start, wipe_start,
+                                     -preferred_dir, reverse_offset, max_wipe_length)) {
+                    reversed_source.points.front() = seam_start;
+                    auto candidate = validate_candidate(std::move(reversed_source), seam_end, seam_end,
+                        wipe_tolerance(reverse_offset), reversed_support_offset->normalized(), reverse_offset);
+                    if (candidate && (! reversed ||
+                        (candidate->path_length > reversed->path_length + length_margin &&
+                         candidate->support_score <= reversed->support_score + wipe_tolerance(reverse_offset))))
+                        reversed = std::move(candidate);
+                }
+            }
+        }
     }
 
     // Orca: conventional offsets at a narrow cusp may form a bevel across the
@@ -815,7 +864,6 @@ bool offset_wipe_path_toward_support(Polyline &polyline, Point seam_start, Point
 
     // Orca: prefer a complete reverse wipe over a forward fallback that had to
     // stop at the corner. Equal-length paths keep the normal forward behavior.
-    const double length_margin = wipe_tolerance(max_wipe_length);
     if (reversed && (! selected ||
         (reversed->path_length > selected->path_length + length_margin &&
          reversed->support_score <= selected->support_score + direction_change_margin)))
