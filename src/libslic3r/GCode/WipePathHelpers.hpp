@@ -8,6 +8,14 @@
 
 namespace Slic3r {
 
+// Printed prefix of one region's perimeter sequence. Append each entity only
+// after extrusion; later walls and other regions cannot support an inward wipe.
+struct WipeInwardSupport {
+    Lines printed_lines;
+    Lines inner_lines;
+    void append(const ExtrusionEntity &entity);
+};
+
 namespace AABBTreeLines {
 template <typename LineType> class LinesDistancer;
 }

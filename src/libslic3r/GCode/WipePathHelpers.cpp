@@ -10,6 +10,25 @@
 
 namespace Slic3r {
 
+void WipeInwardSupport::append(const ExtrusionEntity &entity)
+{
+    const ExtrusionPaths *paths = nullptr;
+    if (const auto *loop = dynamic_cast<const ExtrusionLoop *>(&entity))
+        paths = &loop->paths;
+    else if (const auto *multipath = dynamic_cast<const ExtrusionMultiPath *>(&entity))
+        paths = &multipath->paths;
+
+    // A loop's role is its first path's role. An overhanging start must not
+    // hide the ordinary inner-wall segments elsewhere in the same loop.
+    const bool is_inner = paths ? std::any_of(paths->begin(), paths->end(),
+        [](const ExtrusionPath &path) { return is_internal_perimeter(path.role()); }) :
+        is_internal_perimeter(entity.role());
+    const Lines lines = entity.as_polyline().lines();
+    printed_lines.insert(printed_lines.end(), lines.begin(), lines.end());
+    if (is_inner)
+        inner_lines.insert(inner_lines.end(), lines.begin(), lines.end());
+}
+
 // Orca: miter limit ratio. Matches DefaultMiterLimit from ClipperUtils.hpp.
 // When the miter join extends more than miter_limit * offset_dist from the
 // original vertex, the miter is replaced by a bevel join.

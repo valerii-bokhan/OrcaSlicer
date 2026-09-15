@@ -48,6 +48,16 @@ complete executable path, including its connector from the nozzle position,
 against the current and earlier printed perimeters. Nearby endpoints alone do
 not establish support across a gap.
 
+Each region accumulates its printed perimeter prefix once, in extrusion order.
+Every entity contributes its geometry only after it is printed, and the prefix
+is discarded when the region ends. This collection is skipped when inward wiping
+is disabled or its configured distance is zero. A mixed inner-wall loop remains
+an eligible target even when its first path is an overhang: ordinary inner-wall
+paths elsewhere in the loop identify it. An outer wall with overhang paths is
+available for support checks but is not an inner-wall target. Candidate-specific
+support filtering and AABB trees are built only for eligible external loops,
+then reused across their candidate paths.
+
 Material-side validation applies with or without a seam gap. Along each
 candidate, local wall normals point toward the adjacent printed inner wall;
 samples on the opposite side are rejected even when they remain close enough
@@ -144,3 +154,5 @@ an accepted inward wipe executes separately without retraction.
   With Wipe inward disabled, they check the loop move's direction and magnitude
   for Classic and Arachne, the subsequent wipe's start and length, and fractional
   retraction splitting in absolute and relative E modes.
+  Loop-move checks use reserved role/wipe markers and extrusion state, and run
+  with human-readable G-code comments both enabled and disabled.

@@ -7,6 +7,7 @@
 #include "libslic3r/Line.hpp"
 #include "libslic3r/libslic3r.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -30,6 +31,52 @@ static ExtrusionPaths make_paths(const std::vector<Point> &pts, ExtrusionRole ro
     ExtrusionPaths paths;
     paths.push_back(make_path(pts, role, width));
     return paths;
+}
+
+TEST_CASE("Inward wipe support recognizes an inner wall starting on an overhang", "[WipePath][Regression]")
+{
+    const bool overhang_first = GENERATE(false, true);
+    const auto point = [](double x, double y) { return Point::new_scale(x, y); };
+    ExtrusionPaths paths{
+        make_path({point(0.4, 0.4), point(0.4, 2.)}, erOverhangPerimeter),
+        make_path({point(0.4, 2.), point(0.4, 9.6), point(5.6, 9.6), point(5.6, 0.4), point(0.4, 0.4)}, erPerimeter)
+    };
+    if (!overhang_first)
+        std::rotate(paths.begin(), paths.begin() + 1, paths.end());
+    const ExtrusionLoop inner(paths);
+    REQUIRE(inner.role() == (overhang_first ? erOverhangPerimeter : erPerimeter));
+
+    WipeInwardSupport support;
+    support.append(inner);
+    REQUIRE(support.inner_lines.size() == inner.as_polyline().lines().size());
+    // The overhanging portion itself is already printed and can support the wipe.
+    const LinesDistancer<Line> inner_distancer(support.inner_lines);
+    CHECK_THAT(inner_distancer.distance_from_lines<false>(point(0.4, 1.)),
+               Catch::Matchers::WithinAbs(0., SCALED_EPSILON));
+    const Polyline original{point(0., 0.), point(0., 10.), point(6., 10.), point(6., 0.), point(0., 0.)};
+    Polyline wipe = original;
+    REQUIRE(offset_wipe_path_toward_support(wipe, original.first_point(), original.first_point(),
+        original.first_point(), -1, scale_(0.2), scale_(2.), support.inner_lines,
+        support.printed_lines, original.lines(), scale_(0.6)));
+    CHECK(wipe.points[1].x() > original.first_point().x());
+}
+
+TEST_CASE("Inward wipe support accumulates earlier walls without treating outer walls as targets", "[WipePath][Regression]")
+{
+    const auto point = [](double x, double y) { return Point::new_scale(x, y); };
+    WipeInwardSupport support;
+    const ExtrusionPath inner = make_path({point(0.4, 0.), point(0.4, 5.)}, erPerimeter);
+    support.append(inner);
+    const ExtrusionLoop outer(ExtrusionPaths{
+        make_path({point(0., 0.), point(0., 5.)}, erOverhangPerimeter),
+        make_path({point(0., 5.), point(-5., 5.), point(-5., 0.), point(0., 0.)})
+    });
+    support.append(outer);
+    REQUIRE(support.inner_lines.size() == 1);
+    REQUIRE(support.printed_lines.size() == 5);
+    const LinesDistancer<Line> targets(support.inner_lines);
+    CHECK_THAT(targets.distance_from_lines<false>(point(0., 2.)),
+               Catch::Matchers::WithinAbs(scale_(0.4), SCALED_EPSILON));
 }
 
 static ExtrusionPaths make_loop_paths(const std::vector<Point> &contour_pts, float width = 0.4f)
