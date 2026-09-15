@@ -14,6 +14,124 @@
 using namespace Slic3r;
 using Slic3r::AABBTreeLines::LinesDistancer;
 
+TEST_CASE("Stored wipe path retains its length around a curved wall after a seam gap", "[WipePath][Regression]")
+{
+    const int mirror = GENERATE(1, -1);
+    const double wipe_length = GENERATE(0.8, 1.0);
+    CAPTURE(mirror, wipe_length);
+    // A 0.02 mm seam gap on a curved 0.24 mm wall leaves a short outgoing
+    // segment whose inward offset backtracks. Coordinates use internal scaling
+    // from the affected loop; the adjacent inner wall is already printed.
+    const auto point = [mirror](coord_t x, coord_t y) { return Point(mirror * x, y); };
+    const Polyline original{
+        point(671861, 7772276), point(688586, 7765098), point(781082, 7687014),
+        point(852059, 7608861), point(889773, 7556912), point(958919, 7382963),
+        point(977048, 7259018), point(977325, 7173839), point(944250, 7039370),
+        point(911230, 6952087), point(880323, 6894944), point(760243, 6763860),
+        point(598587, 6641719), point(492626, 6593610), point(362533, 6543938),
+        point(170173, 6513482), point(114917, 6509380), point(18418, 6513666),
+        point(-145550, 6537251), point(-259087, 6580797), point(-413987, 6690495),
+        point(-485220, 6767022), point(-561189, 6893573), point(-576897, 6965717),
+        point(-595201, 7089303), point(-597977, 7164172), point(-590614, 7239553),
+        point(-574031, 7305533), point(-539668, 7383293), point(-442552, 7550465),
+        point(-332173, 7659644), point(-257819, 7717153), point(-209522, 7749563),
+        point(-121695, 7793438), point(399, 7844160), point(228137, 7880068),
+        point(363721, 7881585), point(431909, 7865985), point(569648, 7816149),
+        point(653482, 7780164),
+    };
+    const Polyline inner{
+        point(739251, 7241332), point(739377, 7202281), point(716708, 7110113),
+        point(694416, 7051190), point(685088, 7033943), point(599527, 6940541),
+        point(476243, 6847393), point(400952, 6813209), point(300851, 6774988),
+        point(142724, 6749952), point(111379, 6747625), point(40681, 6750765),
+        point(-85281, 6768883), point(-146010, 6792175), point(-256555, 6870462),
+        point(-295251, 6912034), point(-336173, 6978125), point(-357996, 7111200),
+        point(-359693, 7156985), point(-355612, 7198777), point(-348288, 7227916),
+        point(-327412, 7275156), point(-252784, 7403618), point(-175201, 7480358),
+        point(-89616, 7543582), point(-22802, 7576960), point(65459, 7613627),
+        point(248096, 7642423), point(338175, 7643431), point(364673, 7637369),
+        point(482204, 7594844), point(562221, 7560499), point(615604, 7515433),
+        point(679764, 7441323), point(727601, 7320981), point(739251, 7241332),
+    };
+    const Point seam_start = original.first_point();
+    const Point seam_end = original.last_point();
+    const double offset = scale_(0.239999);
+    Polyline forward = original;
+    REQUIRE_FALSE(offset_wipe_path(forward, seam_start, seam_end, seam_end,
+        -mirror, offset, scale_(wipe_length)));
+
+    Polyline path = original;
+    REQUIRE(offset_wipe_path_toward_support(path, seam_start, seam_end, seam_end,
+        -mirror, offset, scale_(wipe_length), inner.lines(), inner.lines(), original.lines(), offset));
+    REQUIRE(path.first_point() == seam_start);
+    REQUIRE(path.points.size() > 2);
+    // Wipe::wipe replaces the sentinel with the actual extrusion endpoint.
+    path.points.front() = seam_end;
+    CHECK_THAT(unscale_(path.length()), Catch::Matchers::WithinAbs(wipe_length, 0.0004));
+    CHECK(mirror * (path.points[1].x() - seam_end.x()) < 0);
+    CHECK(path.points[1].y() < seam_end.y());
+    Lines support = inner.lines();
+    const Lines current = original.lines();
+    support.insert(support.end(), current.begin(), current.end());
+    REQUIRE(wipe_path_support_score(path, seam_end, LinesDistancer<Line>(inner.lines()),
+        LinesDistancer<Line>(support), offset).has_value());
+}
+
+TEST_CASE("Stored wipe path retains its length after a loop pre-move at a curved seam", "[WipePath][Regression]")
+{
+    const int mirror = GENERATE(1, -1);
+    const bool pre_move = GENERATE(false, true);
+    CAPTURE(mirror, pre_move);
+    const auto point = [mirror](coord_t x, coord_t y) { return Point(mirror * x, y); };
+    // A 0.02 mm seam gap on a curved 0.24 mm wall, with the adjacent inner
+    // wall already printed. The loop pre-move advances the nozzle near the seam.
+    const Polyline original{
+        point(686772, 7813199), point(516334, 7887188), point(411017, 7915098),
+        point(346190, 7926015), point(246957, 7925330), point(-16945, 7881611),
+        point(-116443, 7842513), point(-255907, 7773886), point(-378126, 7681053),
+        point(-499258, 7552879), point(-574414, 7438250), point(-613558, 7370259),
+        point(-626313, 7341394), point(-650774, 7263424), point(-669964, 7169919),
+        point(-666798, 7058662), point(-631336, 6876547), point(-624410, 6852946),
+        point(-577832, 6762704), point(-517493, 6693143), point(-455794, 6631765),
+        point(-315549, 6531304), point(-169627, 6468424), point(-1908, 6443726),
+        point(143562, 6438395), point(314277, 6465470), point(380448, 6480795),
+        point(519922, 6526617), point(673990, 6611110), point(801581, 6705610),
+        point(927505, 6840928), point(969616, 6912718), point(1004269, 7009155),
+        point(1044144, 7171737), point(1046617, 7228598), point(1028598, 7358360),
+        point(950280, 7560914), point(867133, 7675444), point(732946, 7788889),
+        point(706168, 7804780), point(705118, 7805235),
+    };
+    const Polyline inner{
+        point(808905, 7211140), point(796801, 7298317), point(739603, 7446245),
+        point(691575, 7512401), point(595745, 7593416), point(438069, 7661865),
+        point(360694, 7682370), point(327119, 7688024), point(266586, 7687607),
+        point(53302, 7653657), point(-20276, 7624745), point(-130307, 7570601),
+        point(-218687, 7503470), point(-311907, 7404832), point(-371722, 7313599),
+        point(-401113, 7262547), point(-420207, 7203763), point(-431422, 7149118),
+        point(-429596, 7084952), point(-401187, 6939055), point(-379519, 6897073),
+        point(-343546, 6855603), point(-301665, 6813940), point(-197879, 6739595),
+        point(-104131, 6699197), point(19838, 6680942), point(129154, 6676936),
+        point(268758, 6699077), point(316366, 6710103), point(424812, 6745731),
+        point(545430, 6811879), point(642396, 6883697), point(735572, 6983824),
+        point(753259, 7013976), point(776223, 7077887), point(808905, 7211140),
+    };
+    const Point seam_start = original.first_point();
+    const Point seam_end = original.last_point();
+    const Point wipe_start = pre_move ? point(652751, 7792162) : seam_end;
+    const double offset = scale_(0.239999);
+    Polyline path = original;
+    REQUIRE(offset_wipe_path_toward_support(path, seam_start, seam_end, wipe_start,
+        mirror, offset, scale_(0.8), inner.lines(), inner.lines(), original.lines(), offset));
+    REQUIRE(path.first_point() == seam_start);
+    path.points.front() = wipe_start;
+    CHECK_THAT(unscale_(path.length()), Catch::Matchers::WithinAbs(0.8, 0.0004));
+    Lines support = inner.lines();
+    const Lines current = original.lines();
+    support.insert(support.end(), current.begin(), current.end());
+    REQUIRE(wipe_path_support_score(path, wipe_start, LinesDistancer<Line>(inner.lines()),
+        LinesDistancer<Line>(support), offset).has_value());
+}
+
 // Orca: helpers for constructing the extrusion geometry used by wipe tests.
 
 static ExtrusionPath make_path(const std::vector<Point> &pts, ExtrusionRole role = erExternalPerimeter,
@@ -649,6 +767,30 @@ TEST_CASE("Stored wipe path rejects an outward offset at a reflex seam gap", "[W
         preferred_dir, scale_(offset), scale_(2.), support, support, current, scale_(0.4)));
     REQUIRE(path.points.size() == 2);
     CHECK(mirror * path.points[1].x() > mirror * wipe_start.x());
+}
+
+TEST_CASE("Direct inward wipes respect the nozzle position and intervening walls", "[WipePath][Regression]")
+{
+    const int mirror = GENERATE(1, -1);
+    const bool crossing_wall = GENERATE(false, true);
+    CAPTURE(mirror, crossing_wall);
+    const auto point = [mirror](double x, double y) { return Point::new_scale(mirror * x, y); };
+    const Point seam_start = point(0., 0.);
+    const double gap_component = 0.04 / std::sqrt(2.);
+    const Point seam_end = point(-gap_component, -gap_component);
+    const Polyline original{seam_start, point(0., -10.)};
+    const Lines support{Line(point(0.4, -10.), point(0.4, 1.))};
+    Lines current = original.lines();
+    // The direct destination is near x=0.172. A nozzle already farther inward
+    // must not return toward the wall. An inward connector from x=0.05 must
+    // still be rejected when another wall lies between it and the destination.
+    const Point wipe_start = point(crossing_wall ? 0.05 : 0.3, -0.04);
+    if (crossing_wall)
+        current.emplace_back(point(0.1, -0.2), point(0.1, 0.2));
+    Polyline path = original;
+    REQUIRE_FALSE(offset_wipe_path_toward_support(path, seam_start, seam_end, wipe_start,
+        mirror, scale_(0.2), scale_(2.), support, support, current, scale_(0.4)));
+    CHECK(path.points == original.points);
 }
 
 TEST_CASE("Inward wipe checks the material side after leaving an open wall endpoint", "[WipePath][Regression]")

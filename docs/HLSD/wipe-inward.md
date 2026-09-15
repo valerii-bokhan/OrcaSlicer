@@ -43,7 +43,10 @@ or self-touching contours.
 
 Candidate paths offset or translate the portion needed for the configured wipe
 distance. A wide seam gap can prevent a supported forward path; following the
-incoming printed wall backwards is also a candidate. The planner checks the
+incoming printed wall backwards is also a candidate. If translating that wall
+cannot provide a complete wipe around a curve, the planner tries an offset of
+the reversed wall. Direction checks allow coordinate-rounding error at a
+perpendicular entry, while rejecting actual backtracking. The planner checks the
 complete executable path, including its connector from the nozzle position,
 against the current and earlier printed perimeters. Nearby endpoints alone do
 not establish support across a gap.
@@ -53,10 +56,11 @@ Every entity contributes its geometry only after it is printed, and the prefix
 is discarded when the region ends. This collection is skipped when inward wiping
 is disabled or its configured distance is zero. A mixed inner-wall loop remains
 an eligible target even when its first path is an overhang: ordinary inner-wall
-paths elsewhere in the loop identify it. An outer wall with overhang paths is
-available for support checks but is not an inner-wall target. Candidate-specific
-support filtering and AABB trees are built only for eligible external loops,
-then reused across their candidate paths.
+paths elsewhere in the loop identify it. Likewise, an external loop with an
+overhanging start remains eligible when other segments identify the external
+wall. It is available for support checks but is not an inner-wall target.
+Candidate-specific support filtering and AABB trees are built only for eligible
+external loops, then reused across their candidate paths.
 
 Material-side validation applies with or without a seam gap. Along each
 candidate, local wall normals point toward the adjacent printed inner wall;
@@ -69,7 +73,9 @@ material-side and support checks apply without that additional clearance rule.
 
 An accepted candidate replaces the stored wipe path as a whole. A short direct
 inward move is also eligible when longer candidates fail validation. It may
-waive full wall clearance, but must pass the material-side check. It takes
+waive full wall clearance, but must pass the material-side check. Its initial
+direction is checked from the actual nozzle position after any loop pre-move;
+the original wall endpoint is retained separately for intersection checks. It takes
 priority over the alternate offset when the preferred and translated paths
 are unusable. A longer reversed path may replace the selected candidate only
 when its distance to the target inner wall is no worse within tolerance.
@@ -113,6 +119,12 @@ Coincident samples or degenerate angles suppress the move.
 The nozzle position stored by G-code generation must match the emitted loop
 move. Both travel planning and wipe execution depend on this position, including
 when Wipe inward is disabled.
+
+With a seam gap, a loop move may advance past the inward offset's original entry.
+If that alone makes the connector backtrack, the entry advances to the nozzle's
+projection on the offset. The planner extends the source as needed to preserve
+the configured wipe length and validates the new connector and complete path.
+Joins that already backtrack across the seam gap are not adjusted this way.
 
 ## Execution and retraction
 

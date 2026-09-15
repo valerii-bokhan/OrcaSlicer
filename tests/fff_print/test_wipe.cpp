@@ -10,6 +10,7 @@
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Layer.hpp"
 
 #include "test_helpers.hpp"
 
@@ -343,6 +344,62 @@ TEST_CASE("Inward wipe changes the exported trajectory when outer wall width is 
     REQUIRE_FALSE(regular.empty());
     REQUIRE_FALSE(inward.empty());
     REQUIRE(trajectories_differ(regular, inward));
+}
+
+TEST_CASE("Inward wipe recognizes an external wall starting on an overhang", "[Wipe][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const bool inward = GENERATE(false, true);
+    CAPTURE(wall_generator, inward);
+    const auto config = wipe_config(wall_generator, inward, "50%", "0%", false,
+                                    "3", "inner-outer-inner wall", false, "0%", "back");
+    Print print;
+    Model model;
+    init_print({make_cube(10., 10., 1.)}, print, model, config);
+    print.process();
+    size_t mixed_loops = 0;
+    const auto mark_overhangs = [&](auto &&self, ExtrusionEntity *entity) -> void {
+        if (auto *collection = dynamic_cast<ExtrusionEntityCollection *>(entity)) {
+            for (ExtrusionEntity *child : collection->entities)
+                self(self, child);
+        } else if (auto *loop = dynamic_cast<ExtrusionLoop *>(entity); loop && is_external_perimeter(loop->role())) {
+            // Keep the printed geometry intact and give the back seam overhang
+            // roles. The front edge remains an ordinary external-wall segment.
+            ExtrusionPaths paths;
+            bool has_overhang = false;
+            bool has_external = false;
+            for (const ExtrusionPath &source : loop->paths) {
+                for (size_t i = 1; i < source.polyline.points.size(); ++i) {
+                    ExtrusionPath path = source;
+                    path.polyline.points = {source.polyline.points[i - 1], source.polyline.points[i]};
+                    const bool overhang = path.polyline.points.front().y() > 0 || path.polyline.points.back().y() > 0;
+                    path.set_extrusion_role(overhang ? erOverhangPerimeter : erExternalPerimeter);
+                    has_overhang |= overhang;
+                    has_external |= !overhang;
+                    paths.push_back(std::move(path));
+                }
+            }
+            REQUIRE(has_overhang);
+            REQUIRE(has_external);
+            loop->paths = std::move(paths);
+            ++mixed_loops;
+        }
+    };
+    for (const PrintObject *object : print.objects())
+        for (Layer *layer : object->layers())
+            for (LayerRegion *region : layer->regions())
+                mark_overhangs(mark_overhangs, &region->perimeters);
+    REQUIRE(mixed_loops > 0);
+
+    bool has_inward_wipe = false;
+    for (const WipeTrajectory &trajectory : wipe_trajectories(gcode(print))) {
+        if (trajectory.destinations.empty())
+            continue;
+        const Vec2d move = trajectory.destinations.front() - trajectory.start;
+        if (trajectory.start.x() > 4. && trajectory.start.y() > 4. && move.x() < -0.05 && move.y() < -0.05)
+            has_inward_wipe = true;
+    }
+    CHECK(has_inward_wipe == inward);
 }
 
 TEST_CASE("Inward wipe keeps its offset when seam gap is zero", "[Wipe][Regression]")

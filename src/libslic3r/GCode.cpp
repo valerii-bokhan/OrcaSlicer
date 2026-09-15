@@ -7476,7 +7476,10 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
         // context was created. Check the effective setting again at execution.
         if (m_config.wipe_inward && m_config.wipe_inward_distance.value > 0. &&
             wipe_support != nullptr && !wipe_support->inner_lines.empty() &&
-            loop.role() == erExternalPerimeter &&
+            // A loop's role is its first path's role. An overhanging start must
+            // not hide ordinary external-wall segments elsewhere in the loop.
+            std::any_of(paths.begin(), paths.end(),
+                [](const ExtrusionPath &path) { return is_external_perimeter(path.role()); }) &&
             m_wipe.path.points.size() >= 2) {
             // Orca: use the actual extrusion width from the path, not the config
             // value — outer_wall_line_width=0 (Auto) would make get_abs_value
