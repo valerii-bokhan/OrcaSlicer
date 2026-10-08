@@ -1739,13 +1739,19 @@ static Point move_inside_if_outside(const Polygons &polygons, Point from, int di
         const coord_t foot_radius_increase = std::max(config.bp_radius_increase_per_layer - config.branch_radius_increase_per_layer, 0.0);
         // Is nearly all of the time 1, but sometimes an increase of 1 could cause the radius to become bigger than recommendedMinRadius,
         // which could cause the radius to become bigger than precalculated.
-        double planned_foot_increase = std::min(1.0, double(config.recommendedMinRadius(layer_idx - 1) - support_element_radius(config, current_elem)) / foot_radius_increase);
-//FIXME
+        double planned_foot_increase = foot_radius_increase > 0 ?
+                                           std::min(1.0, double(config.recommendedMinRadius(layer_idx - 1, current_elem.distance_to_top) -
+                                                                support_element_radius(config, current_elem)) /
+                                                             foot_radius_increase) :
+                                           0.;
+        // FIXME
         bool increase_bp_foot = planned_foot_increase > 0 && current_elem.to_buildplate;
-//        bool increase_bp_foot = false;
+        //        bool increase_bp_foot = false;
 
-        if (increase_bp_foot && support_element_radius(config, current_elem) >= config.branch_radius && support_element_radius(config, current_elem) >= config.increase_radius_until_radius)
-            if (validWithRadius(config.getRadius(current_elem.effective_radius_height, current_elem.elephant_foot_increases + planned_foot_increase))) {
+        if (increase_bp_foot && support_element_radius(config, current_elem) >= config.branch_radius &&
+            support_element_radius(config, current_elem) >= config.increase_radius_until_radius)
+            if (validWithRadius(
+                    config.getRadius(current_elem.effective_radius_height, current_elem.elephant_foot_increases + planned_foot_increase))) {
                 current_elem.elephant_foot_increases += planned_foot_increase;
                 radius = support_element_collision_radius(config, current_elem);
             }
@@ -1894,7 +1900,8 @@ static void increase_areas_one_layer(
                 extra_slow_speed += std::min(projected_radius_delta, (config.maximum_move_distance + extra_speed) - (config.maximum_move_distance_slow + extra_slow_speed));
 
             if (config.layer_start_bp_radius > layer_idx &&
-                config.recommendedMinRadius(layer_idx - 1) < config.getRadius(elem.effective_radius_height + 1, elem.elephant_foot_increases)) {
+                config.recommendedMinRadius(layer_idx - 1, elem.distance_to_top) <
+                    config.getRadius(elem.effective_radius_height + 1, elem.elephant_foot_increases)) {
                 // can guarantee elephant foot radius increase
                 if (ceiled_parent_radius == volumes.ceilRadius(config.getRadius(parent.state.effective_radius_height + 1, parent.state.elephant_foot_increases + 1), parent.state.use_min_xy_dist))
                     extra_speed += config.bp_radius_increase_per_layer;

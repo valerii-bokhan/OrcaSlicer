@@ -331,9 +331,14 @@ SupportGeneratorLayersPtr generate_raft_base(
     SupportGeneratorLayer       *interfaces       = interface_layers     .empty() ? nullptr : interface_layers     .front();
     SupportGeneratorLayer       *base_interfaces  = base_interface_layers.empty() ? nullptr : base_interface_layers.front();
     SupportGeneratorLayer       *columns_base     = base_layers          .empty() ? nullptr : base_layers          .front();
-    if (contacts != nullptr && contacts->print_z > std::max(slicing_params.first_print_layer_height, slicing_params.raft_contact_top_z) + EPSILON)
+    Polygons floating_object_silhouette;
+    if (contacts != nullptr &&
+        contacts->print_z > std::max(slicing_params.first_print_layer_height, slicing_params.raft_contact_top_z) + EPSILON) {
         // This is not the raft contact layer.
+        if (slicing_params.raft_layers() > 1 && !contacts->polygons.empty())
+            floating_object_silhouette = contacts->polygons;
         contacts = nullptr;
+    }
     if (interfaces != nullptr && interfaces->bottom_print_z() > slicing_params.raft_interface_top_z + EPSILON)
         // This is not the raft column base layer.
         interfaces = nullptr;
@@ -345,8 +350,14 @@ SupportGeneratorLayersPtr generate_raft_base(
         columns_base = nullptr;
 
     Polygons interface_polygons;
-    if (contacts != nullptr && ! contacts->polygons.empty())
+    if (contacts != nullptr && !contacts->polygons.empty()) {
         polygons_append(interface_polygons, expand(contacts->polygons, inflate_factor_fine, SUPPORT_SURFACES_OFFSET_PARAMETERS));
+    } else if (!floating_object_silhouette.empty()) {
+        // Preserve the raft under a raised object, using columns where they reach the raft.
+        const Polygons& raft_interface_source = columns_base != nullptr && !columns_base->polygons.empty() ? columns_base->polygons :
+                                                                                                             floating_object_silhouette;
+        polygons_append(interface_polygons, expand(raft_interface_source, inflate_factor_fine, SUPPORT_SURFACES_OFFSET_PARAMETERS));
+    }
     if (interfaces != nullptr && ! interfaces->polygons.empty())
         polygons_append(interface_polygons, expand(interfaces->polygons, inflate_factor_fine, SUPPORT_SURFACES_OFFSET_PARAMETERS));
     if (base_interfaces != nullptr && ! base_interfaces->polygons.empty())
@@ -429,9 +440,20 @@ SupportGeneratorLayersPtr generate_raft_base(
             if (! interface_polygons.empty())
                 columns_base->polygons = diff(columns_base->polygons, interface_polygons);
         }
-        if (! brim.empty()) {
-            if (columns_base)
-                columns_base->polygons = diff(columns_base->polygons, brim);
+        if (!brim.empty()) {
+            if (columns_base) {
+                columns_base->polygons = opening(diff(columns_base->polygons, brim), float(support_params.first_layer_flow.scaled_width()));
+                if (base_layers.size() > 1) {
+                    Polygons filtered_polygons;
+                    // Keep each connected island with its holes, rather than filtering rings independently.
+                    for (const ExPolygon& island : union_ex(columns_base->polygons)) {
+                        Polygons polygons = to_polygons(island);
+                        if (!intersection(polygons, base_layers[1]->polygons).empty())
+                            polygons_append(filtered_polygons, std::move(polygons));
+                    }
+                    columns_base->polygons = std::move(filtered_polygons);
+                }
+            }
             if (contacts)
                 contacts->polygons = diff(contacts->polygons, brim);
             if (interfaces)
@@ -765,17 +787,28 @@ void fill_expolygons_with_sheath_generate_paths(
 // Support layers, partially processed.
 struct SupportGeneratorLayerExtruded
 {
-    SupportGeneratorLayerExtruded& operator=(SupportGeneratorLayerExtruded &&rhs) {
-        this->layer = rhs.layer;
+    ~SupportGeneratorLayerExtruded()
+    {
+        // Paths not yet transferred to support_fills still belong to this cache on cancellation.
+        for (ExtrusionEntity* entity : extrusions)
+            delete entity;
+    }
+
+    SupportGeneratorLayerExtruded& operator=(SupportGeneratorLayerExtruded&& rhs)
+    {
+        if (this == &rhs)
+            return *this;
+        for (ExtrusionEntity* entity : extrusions)
+            delete entity;
+        this->layer      = rhs.layer;
         this->extrusions = std::move(rhs.extrusions);
+        rhs.extrusions.clear();
         m_polygons_to_extrude = std::move(rhs.m_polygons_to_extrude);
-        rhs.layer = nullptr;
+        rhs.layer             = nullptr;
         return *this;
     }
 
-    bool empty() const {
-        return layer == nullptr || layer->polygons.empty();
-    }
+    bool empty() const { return layer == nullptr || layer->polygons.empty(); }
 
     void set_polygons_to_extrude(Polygons &&polygons) {
         if (m_polygons_to_extrude == nullptr)
@@ -1180,12 +1213,13 @@ static void modulate_extrusion_by_overlapping_layers(
     // Collect the paths of this_layer.
     {
         Polylines &polylines = path_fragments.back().polylines;
-        for (ExtrusionEntity *ee : extrusions_in_out) {
-            ExtrusionPath *path = dynamic_cast<ExtrusionPath*>(ee);
+        for (ExtrusionEntity*& ee : extrusions_in_out) {
+            ExtrusionPath* path = dynamic_cast<ExtrusionPath*>(ee);
             assert(path != nullptr);
             polylines.emplace_back(path->polyline.to_polyline());
             path_ends.emplace_back(std::pair<Point, Point>(polylines.back().points.front(), polylines.back().points.back()));
             delete path;
+            ee = nullptr;
         }
     }
     // Destroy the original extrusion paths, their polylines were moved to path_fragments already.
@@ -1194,7 +1228,7 @@ static void modulate_extrusion_by_overlapping_layers(
 
     // Fragment the path segments by overlapping layers. The overlapping layers are sorted by an increasing print_z.
     // Trim by the highest overlapping layer first.
-    for (int i_overlapping_layer = int(n_overlapping_layers) - 1; i_overlapping_layer >= 0; -- i_overlapping_layer) {
+    for (int i_overlapping_layer = int(n_overlapping_layers) - 1; i_overlapping_layer >= 0; --i_overlapping_layer) {
         const SupportGeneratorLayer &overlapping_layer = *overlapping_layers[i_overlapping_layer];
         ExtrusionPathFragment &frag = path_fragments[i_overlapping_layer];
         Polygons polygons_trimming = offset(union_ex(overlapping_layer.polygons), float(scale_(0.5*extrusion_width)));

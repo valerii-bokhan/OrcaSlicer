@@ -74,7 +74,10 @@ struct TreeSupportMeshGroupSettings {
         this->layer_height              = scaled<coord_t>(config.layer_height.value);
         this->resolution                = scaled<coord_t>(print_config.resolution.value);
         // Arache feature
-        this->min_feature_size          = scaled<coord_t>(config.min_feature_size.value);
+        // Use the same nozzle reference as Orca's Arachne wall generator.
+        const double min_nozzle_diameter = *std::min_element(print_config.nozzle_diameter.values.begin(),
+                                                             print_config.nozzle_diameter.values.end());
+        this->min_feature_size           = scaled<coord_t>(config.min_feature_size.get_abs_value(min_nozzle_diameter));
         // +1 makes the threshold inclusive
         this->support_angle             = 0.5 * M_PI - std::clamp<double>((config.support_threshold_angle + 1) * M_PI / 180., 0., 0.5 * M_PI);
         this->support_line_width        = support_material_flow(&print_object, config.layer_height).scaled_width();
@@ -578,6 +581,19 @@ public:
     {
         double num_layers_widened = layer_start_bp_radius - layer_idx;
         return num_layers_widened > 0 ? branch_radius + num_layers_widened * bp_radius_increase_per_layer : 0;
+    }
+
+    [[nodiscard]] inline coord_t recommendedMinRadius(LayerIndex layer_idx, size_t distance_to_top) const
+    {
+        if (distance_to_top == 0 || layer_idx >= layer_start_bp_radius)
+            return 0;
+
+        // Limit the base cone for short trees so nearby low overhangs keep separate trunks.
+        const double height                   = (double(layer_idx) + double(distance_to_top)) * layer_height;
+        const coord_t recommended_base_radius = coord_t(height * 0.5 + 0.5);
+        coord_t radius                        = std::min(recommended_base_radius, bp_radius);
+        radius -= layer_idx * bp_radius_increase_per_layer;
+        return std::max<coord_t>(radius, 0);
     }
 
 #if 0
