@@ -105,7 +105,8 @@ public:
         if (entities.empty())
             entities = std::move(src);
         else {
-            std::move(std::begin(src), std::end(src), std::back_inserter(entities));
+            // Raw pointers transfer ownership only after the insertion succeeds.
+            entities.insert(entities.end(), src.begin(), src.end());
             src.clear();
         }
     }
