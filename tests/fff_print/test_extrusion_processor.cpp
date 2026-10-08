@@ -7,18 +7,28 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include "libslic3r/AABBTreeLines.hpp"
+#include "libslic3r/Circle.hpp"
+#include "libslic3r/libslic3r.h"
 #include "libslic3r/GCode.hpp"
 #include "libslic3r/GCode/ExtrusionProcessor.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+// Orca: Exercise the inline preview conversion with metadata produced by the real G-code pipeline.
+#include "libvgcode/include/PathVertex.hpp"
 
 #include "test_helpers.hpp"
+#include "test_utils.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include "libslic3r/Line.hpp"
 #include "libslic3r/Point.hpp"
 #include <cstddef>
@@ -29,8 +39,10 @@
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/ExtrusionEntityCollection.hpp"
 #include "libslic3r/ExtrusionEntity.hpp"
+#include <cstdlib>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <catch2/interfaces/catch_interfaces_capture.hpp>
 
@@ -344,6 +356,102 @@ std::string caged_overhang_gcode(const char* wall_generator)
     return gcode(print);
 }
 
+constexpr double shallow_layer_height = 0.02;
+constexpr double shallow_wall_width = 0.23;
+constexpr double shallow_outer_wall_speed = 60.;
+constexpr double shallow_overhang_speed = 30.;
+// Orca: Exercise the existing 10-25% slowdown band without depending on a mild-overhang option.
+constexpr double shallow_slowed_top_offset = 0.2 * shallow_wall_width / shallow_layer_height;
+
+// A 10 x 10 x 1mm prism whose front face moves outwards by top_offset over its height,
+// while the back face remains vertical and fully supported.
+TriangleMesh shallow_overhang_mesh(double top_offset = 0.5)
+{
+    const float top_y = -float(top_offset);
+    return TriangleMesh(
+        {
+            {0.f, 0.f, 0.f},    {10.f, 0.f, 0.f},   {10.f, 10.f, 0.f}, {0.f, 10.f, 0.f},
+            {0.f, top_y, 1.f},  {10.f, top_y, 1.f}, {10.f, 10.f, 1.f}, {0.f, 10.f, 1.f},
+        },
+        {
+            {0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7},
+            {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+            {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7},
+        });
+}
+
+// Orca: Share the print settings between fixed-height and adaptive-height overhang regressions.
+DynamicPrintConfig shallow_overhang_config(const char *wall_generator, bool enable_overhang_speed, bool gcode_overhangs)
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_deserialize_strict({
+        {"nozzle_diameter", "0.2"},
+        {"initial_layer_print_height", shallow_layer_height},
+        {"layer_height", shallow_layer_height},
+        {"line_width", shallow_wall_width},
+        {"outer_wall_line_width", shallow_wall_width},
+        {"inner_wall_line_width", shallow_wall_width},
+        {"wall_loops", "1"},
+        {"wall_generator", wall_generator},
+        {"sparse_infill_density", "0%"},
+        {"top_shell_layers", "1"},
+        {"bottom_shell_layers", "1"},
+        {"detect_overhang_wall", "1"},
+        {"enable_overhang_speed", enable_overhang_speed ? "1" : "0"},
+        {"gcode_overhangs", gcode_overhangs ? "1" : "0"},
+        {"slowdown_for_curled_perimeters", "0"},
+        {"zaa_enabled", "0"},
+        {"outer_wall_speed", shallow_outer_wall_speed},
+        {"inner_wall_speed", shallow_outer_wall_speed},
+        {"overhang_1_4_speed", shallow_overhang_speed},
+        {"overhang_2_4_speed", "0"},
+        {"overhang_3_4_speed", "0"},
+        {"overhang_4_4_speed", "0"},
+        {"filament_max_volumetric_speed", "5"},
+        {"slow_down_for_layer_cooling", "0"},
+        {"slow_down_layers", "0"},
+    });
+
+    return config;
+}
+
+// Orca: Let the fixture independently toggle speed handling and optional preview metadata.
+std::string shallow_overhang_gcode(const char *wall_generator, double top_offset = 0.5,
+                                  bool enable_overhang_speed = true, bool gcode_overhangs = false)
+{
+    Print print;
+    Model model;
+    init_print({shallow_overhang_mesh(top_offset)}, print, model,
+        shallow_overhang_config(wall_generator, enable_overhang_speed, gcode_overhangs), nullptr, false);
+    return gcode(print);
+}
+
+// Orca: Extract every emitted percentage without coupling the regression test to G-code line positions.
+std::vector<float> overhang_percentages(const std::string &gcode)
+{
+    std::vector<float> percentages;
+    size_t position = 0;
+    while ((position = gcode.find("OVERHANG:", position)) != std::string::npos) {
+        position += sizeof("OVERHANG:") - 1;
+        char *end = nullptr;
+        const float percentage = std::strtof(gcode.c_str() + position, &end);
+        if (end != gcode.c_str() + position)
+            percentages.push_back(percentage);
+        position = end != gcode.c_str() + position ? size_t(end - gcode.c_str()) : position;
+    }
+    return percentages;
+}
+
+std::vector<double> shallow_face_feed_rates(const std::string &gcode, bool overhanging_face)
+{
+    return outer_wall_feed_rates(gcode, [overhanging_face](const GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        if (line.new_Z(self) < 3. * shallow_layer_height || line.new_Z(self) > 0.9)
+            return false;
+        const double middle_y = 0.5 * (self.y() + line.new_Y(self));
+        return overhanging_face ? middle_y < 1. : middle_y > 9.;
+    });
+}
+
 // Reports the matched move count alongside the extremes, so a filter that selected nothing is
 // distinguishable from a span that simply was not slowed.
 void info_feed_rates(const char* span, const std::vector<double>& feed_rates)
@@ -354,6 +462,43 @@ void info_feed_rates(const char* span, const std::vector<double>& feed_rates)
         UNSCOPED_INFO("slowest " << *extremes.first / MM_PER_MIN << " mm/s, fastest " << *extremes.second / MM_PER_MIN << " mm/s");
     }
 }
+
+// Orca: Compare executable output independently of optional preview comments, including arc parameters.
+std::vector<std::string> printer_commands(const std::string &gcode)
+{
+    std::vector<std::string> result;
+    GCodeReader reader;
+    reader.parse_buffer(gcode, [&](GCodeReader &, const GCodeReader::GCodeLine &line) {
+        if (!line.cmd().empty())
+            result.push_back(line.raw().substr(0, line.raw().find(';')));
+    });
+    return result;
+}
+
+// Orca: Attach the same standalone inline marker emitted by GCode.cpp without coupling tests to
+// comment spacing. Callers may retain an existing description before the added semicolon-delimited field.
+std::string bind_overhang_arc_profile(std::string arc)
+{
+    assert(!arc.empty() && arc.back() == '\n');
+    arc.insert(arc.size() - 1, ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Overhang_Arc_Apply));
+    return arc;
+}
+
+// Orca: Tests that select a tag dialect must restore the process-wide setting so randomized test
+// ordering cannot make another G-code parser test depend on which case ran immediately before it.
+class ScopedBblPrinterFlag
+{
+public:
+    explicit ScopedBblPrinterFlag(bool value) : m_previous(GCodeProcessor::s_IsBBLPrinter)
+    {
+        GCodeProcessor::s_IsBBLPrinter = value;
+    }
+
+    ~ScopedBblPrinterFlag() { GCodeProcessor::s_IsBBLPrinter = m_previous; }
+
+private:
+    bool m_previous;
+};
 
 } // namespace
 
@@ -1390,6 +1535,25 @@ TEST_CASE("Supported vertical walls keep their normal speed", "[ExtrusionProcess
     REQUIRE(slowest >= caged_slow_speed * MM_PER_MIN);
 }
 
+// Orca: Cover both the default size-preserving path and metadata generation without speed slowdown.
+TEST_CASE("Overhang preview metadata is optional and independent of overhang speed",
+          "[ExtrusionProcessor][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    INFO("wall generator: " << wall_generator);
+
+    constexpr double ten_percent_top_offset = 0.1 * shallow_wall_width / shallow_layer_height;
+    const std::vector<float> disabled_percentages = overhang_percentages(
+        shallow_overhang_gcode(wall_generator, ten_percent_top_offset, false, false));
+    const std::vector<float> percentages = overhang_percentages(
+        shallow_overhang_gcode(wall_generator, ten_percent_top_offset, false, true));
+
+    REQUIRE(disabled_percentages.empty());
+    REQUIRE_FALSE(percentages.empty());
+    REQUIRE(std::all_of(percentages.begin(), percentages.end(), [](float percentage) { return percentage >= 0.f && percentage <= 100.f; }));
+    REQUIRE(std::any_of(percentages.begin(), percentages.end(), [](float percentage) { return std::abs(percentage - 10.f) <= 0.2f; }));
+}
+
 // The slope's top edge falls mid layer, so the first layer above it still stands 0.179mm proud of the layer
 // below wherever that layer was still on the slope. That is a real overhang and is slowed, but it ends with the
 // slope: outside the slope's x range the box runs full height, so the same wall stands on a contour identical to
@@ -1567,7 +1731,7 @@ bool has_curled_lines(const PrintObject &object)
     return std::any_of(layers.begin(), layers.end(), [](const Layer *layer) { return !layer->curled_lines.empty(); });
 }
 
-// Estimates every wall of `layer` against whatever layer `estimator` was last prepared with before it.
+// Estimates every wall of `layer` against the support contour prepared in `estimator`.
 Walls estimate_walls(ExtrusionQualityEstimator &estimator, const PrintObject *object, const Layer &layer)
 {
     const ConfigOptionPercents         overlaps({90, 75, 50, 25, 13, 0});
@@ -1648,9 +1812,10 @@ TEST_CASE("Overhang data computed ahead of the generator gives the same wall spe
     check_identical(estimate_walls(precomputed, cage.object, *cage.layer), expected);
 }
 
-TEST_CASE("Overhang distances measured against another layer than the previous one are not used", "[ExtrusionProcessor]")
+TEST_CASE("Precomputed overhang distances remain valid after skipped layer preparations", "[ExtrusionProcessor]")
 {
     const SlicedCage cage;
+    REQUIRE(cage.layer->lower_layer != nullptr);
     const Layer     *two_below = cage.layer->lower_layer->lower_layer;
     REQUIRE(two_below != nullptr);
 
@@ -1661,7 +1826,7 @@ TEST_CASE("Overhang distances measured against another layer than the previous o
     ExtrusionQualityEstimator one_below;
     one_below.prepare_for_new_layer(cage.object, cage.layer->lower_layer);
     one_below.prepare_for_new_layer(cage.object, cage.layer);
-    REQUIRE(any_difference(estimate_walls(one_below, cage.object, *cage.layer), expected));
+    check_identical(estimate_walls(one_below, cage.object, *cage.layer), expected);
 
     ExtrusionQualityEstimator precomputed;
     precomputed.prepare_for_new_layer(cage.object, two_below);
@@ -1682,8 +1847,8 @@ TEST_CASE("Overhang data computed for another layer is not used", "[ExtrusionPro
     queried.prepare_for_new_layer(cage.object, cage.layer);
     const Walls expected = estimate_walls(queried, cage.object, *cage.layer);
     ExtrusionQualityEstimator two_below;
-    two_below.prepare_for_new_layer(cage.object, one_below->lower_layer);
-    two_below.prepare_for_new_layer(cage.object, cage.layer);
+    // Deliberately query the upper walls against an older support contour: stale data must differ.
+    two_below.prepare_for_new_layer(cage.object, one_below);
     REQUIRE(any_difference(estimate_walls(two_below, cage.object, *cage.layer), expected));
 
     ExtrusionQualityEstimator precomputed;
