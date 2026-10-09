@@ -44,6 +44,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <cstdlib>
@@ -62,6 +63,7 @@
 #include <boost/log/trivial.hpp>
 
 #include <tbb/parallel_for.h>
+#include <tbb/blocked_range.h>
 #include <tbb/parallel_for_each.h>
 #include <tbb/spin_mutex.h>
 #include <vector>
@@ -1643,11 +1645,15 @@ static Point move_inside_if_outside(const Polygons &polygons, Point from, int di
     Polygons                    &to_model_data,
     Polygons                    &increased,
     const coord_t                overspeed,
-    const bool                   mergelayer)
+    const bool                   mergelayer,
+    const bool                   limit_radius_growth)
 {
     SupportElementState current_elem{ SupportElementState::propagate_down(parent.state) };
+    const bool increase_radius = settings.increase_radius && !limit_radius_growth;
+    if (limit_radius_growth || parent.state.draw_radius_height != std::numeric_limits<uint32_t>::max())
+        current_elem.draw_radius_height = uint32_t(getEffectiveDTT(config, parent.state)) + uint32_t(increase_radius);
     Polygons check_layer_data;
-    if (settings.increase_radius)
+    if (increase_radius)
         current_elem.effective_radius_height += 1;
     coord_t radius = support_element_collision_radius(config, current_elem);
 
@@ -1701,7 +1707,7 @@ static Point move_inside_if_outside(const Polygons &polygons, Point from, int di
 
     check_layer_data = current_elem.to_buildplate ? to_bp_data : to_model_data;
 
-    if (settings.increase_radius && area(check_layer_data) > _tiny_area_threshold) {
+    if (increase_radius && area(check_layer_data) > _tiny_area_threshold) {
         auto validWithRadius = [&](coord_t next_radius) {
             if (volumes.ceilRadius(next_radius, settings.use_min_distance) <= volumes.ceilRadius(radius, settings.use_min_distance))
                 return true;
@@ -1843,8 +1849,7 @@ static void increase_areas_one_layer(
     // If false, the merging_areas will not be merged for performance reasons.
     const bool                           mergelayer,
     std::function<void()>                throw_on_cancel,
-    std::vector<int>                     &touch_counts
-)
+    const std::vector<bool>             &radius_growth_locks)
 {
     using AvoidanceType = TreeModelVolumes::AvoidanceType;
 
@@ -1854,7 +1859,10 @@ static void increase_areas_one_layer(
             SupportElementMerging   &merging_area   = merging_areas[merging_area_idx];
             assert(merging_area.parents.size() == 1);
             SupportElement          &parent         = layer_elements[merging_area.parents.front()];
+            const bool limit_radius_growth = radius_growth_locks[merging_area.parents.front()];
             SupportElementState      elem           = SupportElementState::propagate_down(parent.state);
+            if (limit_radius_growth)
+                elem.draw_radius_height = uint32_t(getEffectiveDTT(config, parent.state));
             const Polygons          &wall_restriction =
                 // Abstract representation of the model outline. If an influence area would move through it, it could teleport through a wall.
                 volumes.getWallRestriction(support_element_collision_radius(config, parent.state), layer_idx, parent.state.use_min_xy_dist);
@@ -1871,8 +1879,16 @@ static void increase_areas_one_layer(
             coord_t extra_speed = 5; // The extra speed is added to both movement distances. Also move 5 microns faster than allowed to avoid rounding errors, this may cause issues at VERY VERY small layer heights.
             coord_t extra_slow_speed = 0; // Only added to the slow movement distance.
             const coord_t ceiled_parent_radius = volumes.ceilRadius(support_element_collision_radius(config, parent.state), parent.state.use_min_xy_dist);
-            coord_t projected_radius_increased = config.getRadius(parent.state.effective_radius_height + 1, parent.state.elephant_foot_increases);
+            coord_t projected_radius_increased = limit_radius_growth ? support_element_collision_radius(config, parent.state) :
+                config.getRadius(parent.state.effective_radius_height + 1, parent.state.elephant_foot_increases);
             coord_t projected_radius_delta = projected_radius_increased - support_element_collision_radius(config, parent.state);
+            if (parent.state.draw_radius_height != std::numeric_limits<uint32_t>::max() && !limit_radius_growth) {
+                SupportElementState projected = elem;
+                ++projected.effective_radius_height;
+                projected.draw_radius_height = uint32_t(getEffectiveDTT(config, parent.state)) + 1;
+                projected_radius_delta = std::min(projected_radius_delta,
+                    std::max<coord_t>(0, support_element_radius(config, projected) - support_element_radius(config, parent.state)));
+            }
 
             // When z distance is more than one layer up and down the Collision used to calculate the wall restriction will always include the wall (and not just the xy_min_distance) of the layer above and below like this (d = blocked area because of z distance):
             /*
@@ -1899,7 +1915,7 @@ static void increase_areas_one_layer(
                 // Ensure that the slow movement distance can not become larger than the fast one.
                 extra_slow_speed += std::min(projected_radius_delta, (config.maximum_move_distance + extra_speed) - (config.maximum_move_distance_slow + extra_slow_speed));
 
-            if (config.layer_start_bp_radius > layer_idx &&
+            if (!limit_radius_growth && config.layer_start_bp_radius > layer_idx &&
                 config.recommendedMinRadius(layer_idx - 1, elem.distance_to_top) <
                     config.getRadius(elem.effective_radius_height + 1, elem.elephant_foot_increases)) {
                 // can guarantee elephant foot radius increase
@@ -1922,6 +1938,10 @@ static void increase_areas_one_layer(
             // Determine in which order configurations are checked if they result in a valid influence area. Check will stop if a valid area is found
             std::vector<AreaIncreaseSettings> order;
             auto insertSetting = [&](AreaIncreaseSettings settings, bool back) {
+                // Apply the restriction to every candidate, including locked roof
+                // tips and error fallbacks, without changing their movement priority.
+                if (limit_radius_growth)
+                    settings.increase_radius = false;
                 if (std::find(order.begin(), order.end(), settings) == order.end()) {
                     if (back)
                         order.emplace_back(settings);
@@ -1929,10 +1949,6 @@ static void increase_areas_one_layer(
                         order.insert(order.begin(), settings);
                 }
             };
-
-            if (touch_counts[merging_area.parents.front()] > 1) {
-                insertSetting({ AvoidanceType::Slow, slow_speed, !increase_radius, no_error, !use_min_radius, move }, false);
-            } 
 
             const bool parent_moved_slow = elem.last_area_increase.increase_speed < config.maximum_move_distance;
             const bool avoidance_speed_mismatch = parent_moved_slow && elem.last_area_increase.type != AvoidanceType::Slow;
@@ -2019,7 +2035,8 @@ static void increase_areas_one_layer(
                     Polygons lines_offset = offset(to_polylines(parent.influence_area), scaled<float>(0.005), jtMiter, 1.2);
                     Polygons base_error_area = union_(parent.influence_area, lines_offset);
                     result = increase_single_area(volumes, config, settings, layer_idx, parent,
-                        base_error_area, to_bp_data, to_model_data, inc_wo_collision, (config.maximum_move_distance + extra_speed) * 1.5, mergelayer);
+                        base_error_area, to_bp_data, to_model_data, inc_wo_collision, (config.maximum_move_distance + extra_speed) * 1.5,
+                        mergelayer, limit_radius_growth);
 #ifdef TREE_SUPPORT_SHOW_ERRORS
                     BOOST_LOG_TRIVIAL(error)
 #else // TREE_SUPPORT_SHOW_ERRORS
@@ -2039,7 +2056,7 @@ static void increase_areas_one_layer(
 #endif // TREE_SUPPORTS_TRACK_LOST
                 } else
                     result = increase_single_area(volumes, config, settings, layer_idx, parent,
-                        settings.increase_speed == slow_speed ? offset_slow : offset_fast, to_bp_data, to_model_data, inc_wo_collision, 0, mergelayer);
+                        settings.increase_speed == slow_speed ? offset_slow : offset_fast, to_bp_data, to_model_data, inc_wo_collision, 0, mergelayer, limit_radius_growth);
 
                 if (result) {
                     elem = *result;
@@ -2126,12 +2143,15 @@ static void increase_areas_one_layer(
     }
     out.effective_radius_height = std::max(first.effective_radius_height, second.effective_radius_height);
     out.distance_to_top = std::max(first.distance_to_top, second.distance_to_top);
+    if (first.draw_radius_height != std::numeric_limits<uint32_t>::max() ||
+        second.draw_radius_height != std::numeric_limits<uint32_t>::max())
+        out.draw_radius_height = uint32_t(std::max(getEffectiveDTT(config, first), getEffectiveDTT(config, second)));
 
     out.to_buildplate = first.to_buildplate && second.to_buildplate;
     out.to_model_gracious = first.to_model_gracious && second.to_model_gracious; // valid as we do not merge non-gracious with gracious
 
     out.elephant_foot_increases = 0;
-    if (config.bp_radius_increase_per_layer > 0) {
+    if (config.bp_radius_increase_per_layer > config.branch_radius_increase_per_layer) {
         coord_t foot_increase_radius = std::abs(std::max(support_element_collision_radius(config, second), support_element_collision_radius(config, first)) - support_element_collision_radius(config, out));
         // elephant_foot_increases has to be recalculated, as when a smaller tree with a larger elephant_foot_increases merge with a larger branch
         // the elephant_foot_increases may have to be lower as otherwise the radius suddenly increases. This results often in a non integer value.
@@ -2268,6 +2288,12 @@ static bool merge_influence_areas_two_elements(
     Point new_pos = move_inside_if_outside(intersect, dst.state.next_position);
 
     SupportElementState new_state = merge_support_element_states(dst.state, src.state, new_pos, layer_idx - 1, config);
+    if (new_state.draw_radius_height != std::numeric_limits<uint32_t>::max() &&
+        std::abs(support_element_radius(config, new_state) -
+                 std::max(support_element_radius(config, dst.state), support_element_radius(config, src.state))) > SCALED_EPSILON)
+        // Retain the larger printed radius within rounding tolerance. Mixing a limited
+        // tip with a widened foot must not silently grow or shrink the merged trunk.
+        return false;
     new_state.increased_to_model_radius = increased_to_model_radius == 0 ?
         // increased_to_model_radius was not set yet. Propagate maximum.
         std::max(dst.state.increased_to_model_radius, src.state.increased_to_model_radius) :
@@ -2495,6 +2521,67 @@ static void merge_influence_areas(
     }
 }
 
+std::vector<bool> find_radius_growth_locks(const TreeSupportSettings& settings,
+                                           const SupportElements& elements,
+                                           const std::function<void()>& throw_on_cancel)
+{
+    auto check_cancel = [&] {
+        if (throw_on_cancel)
+            throw_on_cancel();
+    };
+    check_cancel();
+    std::vector<bool> locks(elements.size(), false);
+    if (elements.size() < 3)
+        return locks;
+
+    struct BranchBox
+    {
+        size_t index;
+        Eigen::AlignedBox<coord_t, 2> bounds;
+        size_t idx() const { return index; }
+        Point centroid() const { return (bounds.min() + bounds.max()) / 2; }
+        const Eigen::AlignedBox<coord_t, 2>& bbox() const { return bounds; }
+    };
+    std::vector<BranchBox> boxes;
+    boxes.reserve(elements.size());
+    for (size_t i = 0; i < elements.size(); ++i) {
+        check_cancel();
+        BoundingBox box = get_extents(elements[i].influence_area);
+        // Leave an extra tolerance beyond the footprint for rounded offset vertices.
+        box.offset(support_element_radius(settings, elements[i]) + 2 * SCALED_EPSILON);
+        boxes.push_back({i, {box.min, box.max}});
+    }
+    AABBTreeIndirect::Tree<2, coord_t> tree;
+    tree.build(boxes);
+    check_cancel();
+    std::vector<std::optional<Polygons>> footprints(elements.size());
+    auto footprint = [&](size_t i) -> const Polygons& {
+        if (!footprints[i]) {
+            check_cancel();
+            footprints[i] = offset(elements[i].influence_area, float(support_element_radius(settings, elements[i]) + SCALED_EPSILON),
+                                   jtRound);
+        }
+        return *footprints[i];
+    };
+    for (size_t i = 0; i < elements.size(); ++i) {
+        check_cancel();
+        unsigned neighbors = 0;
+        AABBTreeIndirect::traverse(
+            tree,
+            [&](const auto& node) {
+                check_cancel();
+                return boxes[i].bounds.intersects(node.bbox);
+            },
+            [&](const auto& node) {
+                if (node.idx != i && !intersection(footprint(i), footprint(node.idx)).empty())
+                    ++neighbors;
+                return neighbors < 2;
+            });
+        locks[i] = neighbors >= 2;
+    }
+    return locks;
+}
+
 /*!
  * \brief Propagates influence downwards, and merges overlapping ones.
  *
@@ -2538,22 +2625,10 @@ static void create_layer_pathing(const TreeModelVolumes &volumes, const TreeSupp
                 parents.emplace_back(element_idx);
                 influence_areas.push_back({ el.state, parents });
             }
-            
 
-            std::vector<int> touch_counts(prev_layer.size(), 0);  
-            for (size_t i = 0; i < prev_layer.size(); ++i) {  
-                const coord_t radius_i = support_element_collision_radius(config, prev_layer[i].state);  
-                BoundingBox bbox_i = get_extents(prev_layer[i].influence_area);  
-                bbox_i.offset(radius_i); // expand by own radius as a touch-distance proxy  
-                for (size_t j = 0; j < prev_layer.size(); ++j) {  
-                    if (i == j) continue;  
-                    BoundingBox bbox_j = get_extents(prev_layer[j].influence_area);  
-                    if (bbox_i.overlap(bbox_j))  
-                        ++touch_counts[i];  
-                }  
-            }
-
-            increase_areas_one_layer(volumes, config, influence_areas, layer_idx, prev_layer, merge_this_layer, throw_on_cancel, touch_counts);
+            const std::vector<bool> radius_growth_locks = find_radius_growth_locks(config, prev_layer, throw_on_cancel);
+            increase_areas_one_layer(volumes, config, influence_areas, layer_idx, prev_layer, merge_this_layer, throw_on_cancel,
+                                     radius_growth_locks);
 
             // Place already fully constructed elements to the output, remove them from influence_areas.
             SupportElements &this_layer = move_bounds[layer_idx - 1];

@@ -18,6 +18,7 @@
 #include "libslic3r/libslic3r.h"
 
 #include <boost/container/small_vector.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <cstddef>
@@ -175,6 +176,10 @@ struct SupportElementState : public SupportElementStateBits
      */
     uint32_t    effective_radius_height;
 
+    // Bound the printed radius independently of the collision radius. Once growth
+    // is paused, resume one step at a time instead of catching up to distance_to_top.
+    uint32_t    draw_radius_height = std::numeric_limits<uint32_t>::max();
+
     /*!
      * \brief The amount of layers this element is below the topmost layer of this branch.
      */
@@ -250,9 +255,10 @@ struct SupportElementState : public SupportElementStateBits
  */
 [[nodiscard]] inline size_t getEffectiveDTT(const TreeSupportSettings &settings, const SupportElementState &elem)
 {
-    return elem.effective_radius_height < settings.increase_radius_until_layer ? 
+    const size_t height = elem.effective_radius_height < settings.increase_radius_until_layer ?
         (elem.distance_to_top < settings.increase_radius_until_layer ? elem.distance_to_top : settings.increase_radius_until_layer) : 
         elem.effective_radius_height;
+    return std::min(height, size_t(elem.draw_radius_height));
 }
 
 /*!
@@ -306,6 +312,11 @@ struct SupportElement
 };
 
 using SupportElements = std::deque<SupportElement>;
+
+// Detect possible branch contacts from influence areas expanded by their printed
+// radii. This is conservative: final center positions are not selected yet.
+std::vector<bool> find_radius_growth_locks(const TreeSupportSettings& settings, const SupportElements& elements,
+                                          const std::function<void()>& throw_on_cancel);
 
 [[nodiscard]] inline coord_t support_element_radius(const TreeSupportSettings &settings, const SupportElement &elem)
 {
