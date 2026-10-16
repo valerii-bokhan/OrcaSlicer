@@ -1841,12 +1841,12 @@ TEST_CASE("Height ranges and modifiers count for the filament shrinkage compensa
     CHECK(mismatch_warning == ! object_on_filament_2);
 }
 
-// Orca: Toggling optional preview comments changes only the exported file. Preserve completed
-// slicing work while invalidating the cached G-code so the next export reflects the new setting.
-TEST_CASE("Changing overhang metadata invalidates only G-code export", "[Print][Overhang][Regression]")
+TEST_CASE("Changing G-code output options invalidates only G-code export", "[Print][Regression]")
 {
+    const std::string key = GENERATE("gcode_overhangs", "high_precision_gcode");
+    CAPTURE(key);
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
-    config.set_deserialize_strict("gcode_overhangs", "0");
+    config.set_deserialize_strict(key, "0");
     Print print;
     Model model;
     init_print({cube(2.0)}, print, model, config);
@@ -1857,7 +1857,7 @@ TEST_CASE("Changing overhang metadata invalidates only G-code export", "[Print][
     REQUIRE(print.objects().front()->is_step_done(posSlice));
     REQUIRE(print.objects().front()->is_step_done(posPerimeters));
 
-    config.set_deserialize_strict("gcode_overhangs", "1");
+    config.set_deserialize_strict(key, "1");
     print.apply(model, config);
 
     CHECK_FALSE(print.is_step_done(psGCodeExport));
