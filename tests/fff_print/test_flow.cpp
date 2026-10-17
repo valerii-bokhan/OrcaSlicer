@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <initializer_list>
 #include <memory>
 #include <numeric>
 #include <sstream>
@@ -45,6 +46,7 @@ static double extrusion_with_comment(const std::string &output, const DynamicPri
 
 TEST_CASE("Filament wall flow inherits and overrides the process gate", "[Flow][Regression]")
 {
+    const std::string flow_key = GENERATE(std::string("outer_wall_flow_ratio"), std::string("small_perimeter_flow_ratio"));
     const bool process_gate = GENERATE(false, true);
     const std::string filament_gate = GENERATE(std::string("nil"), std::string("0"), std::string("1"),
                                                std::string("0,1"), std::string("1,0"));
@@ -57,6 +59,7 @@ TEST_CASE("Filament wall flow inherits and overrides the process gate", "[Flow][
         {"brim_type", "no_brim"}, {"skirt_loops", "0"},
         {"use_relative_e_distances", "1"}, {"seam_slope_type", "none"},
         {"first_layer_flow_ratio", "1"}, {"outer_wall_flow_ratio", "1"},
+        {"small_perimeter_threshold", "100"},
         {"set_other_flow_ratios", "0"},
         {"filament_self_index", "1,2"},
         {"filament_extruder_variant", "Direct Drive Standard;Direct Drive Standard"}
@@ -74,12 +77,93 @@ TEST_CASE("Filament wall flow inherits and overrides the process gate", "[Flow][
     const double baseline = wall_extrusion(config);
     REQUIRE(baseline > 0.);
     config.set_deserialize_strict("set_other_flow_ratios", process_gate ? "1" : "0");
-    config.set_deserialize_strict("outer_wall_flow_ratio", "0.8");
+    config.set_deserialize_strict(flow_key, "0.8");
     config.set_deserialize_strict("filament_set_other_flow_ratios", filament_gate);
-    config.set_deserialize_strict("filament_outer_wall_flow_ratio", override_ratio ? "0.9,1.2" : "nil");
+    config.set_deserialize_strict("filament_" + flow_key, override_ratio ? "0.9,1.2" : "nil");
     const bool effective_gate = filament_gate == "nil" ? process_gate : filament_gate.back() == '1';
     const double expected_ratio = effective_gate ? (override_ratio ? 1.2 : 0.8) : 1.;
     REQUIRE_THAT(wall_extrusion(config) / baseline, Catch::Matchers::WithinRel(expected_ratio, 0.001));
+}
+
+TEST_CASE("Small perimeter flow follows the loop threshold and flow gate", "[Flow][Regression]")
+{
+    const char *wall_generator = GENERATE("classic", "arachne");
+    const char *threshold = GENERATE("0", "1", "100");
+    const bool gate = GENERATE(false, true);
+    const char *scarf = GENERATE("none", "all");
+    CAPTURE(wall_generator, threshold, gate, scarf);
+    auto config = multifilament_config(1, {
+        {"wall_generator", wall_generator}, {"wall_loops", "2"},
+        {"sparse_infill_density", "0%"}, {"top_shell_layers", "0"}, {"bottom_shell_layers", "0"},
+        {"layer_height", "0.2"}, {"initial_layer_print_height", "0.2"},
+        {"brim_type", "no_brim"}, {"skirt_loops", "1"}, {"skirt_height", "1"},
+        {"use_relative_e_distances", "1"}, {"gcode_comments", "1"}, {"enable_arc_fitting", "0"},
+        {"seam_slope_type", scarf}, {"seam_slope_conditional", "0"}, {"seam_slope_inner_walls", "1"},
+        {"small_perimeter_threshold", threshold}, {"small_perimeter_speed", "100%"},
+        {"set_other_flow_ratios", gate ? "1" : "0"}, {"first_layer_flow_ratio", "1.1"},
+        {"outer_wall_flow_ratio", "0.9"}, {"inner_wall_flow_ratio", "1.2"},
+        {"filament_flow_ratio", "0.95"}, {"print_flow_ratio", "1.05"}
+    });
+    Print print;
+    Model model;
+    init_print({make_cube(4, 4, 0.6)}, print, model, config, nullptr, false);
+    const std::string baseline = gcode(print);
+    config.set_deserialize_strict("small_perimeter_flow_ratio", "0.8");
+    print.apply(model, config);
+    const std::string adjusted = gcode(print);
+
+    // The 4 mm square loops exceed a 1 mm radius threshold, even when individual
+    // paths or scarf segments are shorter. A zero threshold disables the adjustment.
+    const double expected = gate && std::string_view(threshold) == "100" ? 0.8 : 1.;
+    for (std::string_view role : {"perimeter", "skirt"}) {
+        CAPTURE(role);
+        const double before = extrusion_with_comment(baseline, config, role);
+        REQUIRE(before > 0.);
+        CHECK_THAT(extrusion_with_comment(adjusted, config, role) / before,
+                   Catch::Matchers::WithinRel(role == "skirt" ? 1. : expected, 0.001));
+    }
+}
+
+TEST_CASE("Explicit local small perimeter flow takes precedence over filament overrides", "[Flow][Regression]")
+{
+    const std::string scope = GENERATE(std::string("object"), std::string("part"),
+                                      std::string("modifier"), std::string("height range"));
+    auto config = multifilament_config(1, {
+        {"wall_loops", "1"}, {"sparse_infill_density", "0%"},
+        {"top_shell_layers", "0"}, {"bottom_shell_layers", "0"},
+        {"layer_height", "0.2"}, {"initial_layer_print_height", "0.2"},
+        {"brim_type", "no_brim"}, {"skirt_loops", "0"},
+        {"use_relative_e_distances", "1"}, {"seam_slope_type", "none"}, {"enable_arc_fitting", "0"}, {"gcode_comments", "1"},
+        {"set_other_flow_ratios", "1"}, {"first_layer_flow_ratio", "1"}, {"outer_wall_flow_ratio", "1"},
+        {"small_perimeter_threshold", "100"}, {"small_perimeter_flow_ratio", "1"}
+    });
+    Print print;
+    Model model;
+    init_print({make_cube(4, 4, 0.6)}, print, model, config, nullptr, false);
+    const double baseline = extrusion_with_comment(gcode(print), config, "perimeter");
+    REQUIRE(baseline > 0.);
+    config.set_deserialize_strict("filament_small_perimeter_flow_ratio", "0.8");
+    print.apply(model, config);
+    CHECK_THAT(extrusion_with_comment(gcode(print), config, "perimeter") / baseline,
+               Catch::Matchers::WithinRel(0.8, 0.001));
+
+    ModelObject &object = *model.objects.front();
+    ModelConfig *local = &object.config;
+    if (scope == "part")
+        local = &object.volumes.front()->config;
+    else if (scope == "modifier") {
+        ModelVolume *modifier = object.add_volume(make_cube(4, 4, 0.6));
+        modifier->set_type(ModelVolumeType::PARAMETER_MODIFIER);
+        local = &modifier->config;
+    } else if (scope == "height range") {
+        local = &object.layer_config_ranges[{0., 10.}];
+        local->set_key_value("layer_height", new ConfigOptionFloat(0.2));
+    }
+    // An explicit default-valued ratio must still override the filament value.
+    local->set_key_value("small_perimeter_flow_ratio", new ConfigOptionFloat(1.));
+    print.apply(model, config);
+    CHECK_THAT(extrusion_with_comment(gcode(print), config, "perimeter") / baseline,
+               Catch::Matchers::WithinRel(1., 0.001));
 }
 
 TEST_CASE("Explicit local top flow takes precedence over filament overrides", "[Flow][Regression]")

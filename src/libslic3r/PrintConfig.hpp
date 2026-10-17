@@ -769,7 +769,7 @@ struct FlowRatioOverride {
     bool gated;
 };
 // Order also defines the bits in the derived object/region override masks.
-inline constexpr std::array<FlowRatioOverride, 13> flow_ratio_overrides = {{
+inline constexpr std::array<FlowRatioOverride, 14> flow_ratio_overrides = {{
     {"top_solid_infill_flow_ratio", false},
     {"bottom_solid_infill_flow_ratio", false},
     {"brim_flow_ratio", false},
@@ -781,6 +781,7 @@ inline constexpr std::array<FlowRatioOverride, 13> flow_ratio_overrides = {{
     {"sparse_infill_flow_ratio", true},
     {"internal_solid_infill_flow_ratio", true},
     {"gap_fill_flow_ratio", true},
+    {"small_perimeter_flow_ratio", true},
     {"support_flow_ratio", true},
     {"support_interface_flow_ratio", true}
 }};
@@ -1653,6 +1654,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloat,                first_layer_flow_ratio))
     ((ConfigOptionFloat,                outer_wall_flow_ratio))
     ((ConfigOptionFloat,                inner_wall_flow_ratio))
+    ((ConfigOptionFloat,                small_perimeter_flow_ratio))
     ((ConfigOptionFloat,                overhang_flow_ratio))
     ((ConfigOptionFloat,                sparse_infill_flow_ratio))
     ((ConfigOptionFloat,                internal_solid_infill_flow_ratio))
@@ -1756,6 +1758,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionFloatsNullable,      filament_internal_solid_infill_flow_ratio))
     ((ConfigOptionFloatsNullable,      filament_gap_fill_flow_ratio))
     ((ConfigOptionFloatsNullable,      filament_brim_flow_ratio))
+    ((ConfigOptionFloatsNullable,      filament_small_perimeter_flow_ratio))
     ((ConfigOptionFloatsNullable,      filament_support_flow_ratio))
     ((ConfigOptionFloatsNullable,      filament_support_interface_flow_ratio))
     ((ConfigOptionBools,               enable_pressure_advance))

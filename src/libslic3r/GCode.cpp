@@ -8434,9 +8434,10 @@ std::string GCode::extrude_loop(const ExtrusionLoop&                       loop_
     loop.clip_end(clip_length, &paths);
     if (paths.empty()) return "";
 
-    // SoftFever: check loop lenght for small perimeter. 
+    // Use the complete loop length for both speed and flow, including scarf segments.
+    const bool small_perimeter = loop.length() <= SMALL_PERIMETER_LENGTH(NOZZLE_CONFIG(small_perimeter_threshold));
     double small_peri_speed = -1;
-    if (speed == -1 && loop.length() <= SMALL_PERIMETER_LENGTH(NOZZLE_CONFIG(small_perimeter_threshold))) {
+    if (speed == -1 && small_perimeter) {
         if(NOZZLE_CONFIG(small_perimeter_speed).value == 0)
             small_peri_speed = NOZZLE_CONFIG(outer_wall_speed) * 0.5;
         else
@@ -8546,7 +8547,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&                       loop_
     
     if (!enable_seam_slope) {
         for (const ExtrusionPath& path : paths) {
-            gcode += this->_extrude(path, description, speed_for_path(path));
+            gcode += this->_extrude(path, description, speed_for_path(path), small_perimeter);
             // Orca: Adaptive PA - dont adapt PA after the first multipath extrusion is completed
             // as we have already set the PA value to the average flow over the totality of the path
             // in the first extrude move
@@ -8583,7 +8584,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&                       loop_
 
         // Then extrude it
         for (const ExtrusionPath* path : new_loop.get_all_paths()) {
-            gcode += this->_extrude(*path, description, speed_for_path(*path));
+            gcode += this->_extrude(*path, description, speed_for_path(*path), small_perimeter);
             // Orca: Adaptive PA - dont adapt PA after the first pultipath extrusion is completed
             // as we have already set the PA value to the average flow over the totality of the path
             // in the first extrude move
@@ -9061,7 +9062,7 @@ static bool overhang_fan_active(float overlap, int overhang_fan_threshold, Extru
     return overlap_threshold >= 0.f && overlap <= overlap_threshold;
 }
 
-std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_description, double speed)
+std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_description, double speed, bool small_perimeter)
 {
     std::string gcode;
 
@@ -9255,6 +9256,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, const std::string &path_d
             _mm3_per_mm *= RESOLVE_OPTION(support_flow_ratio);
         } else if (path.role() == erSupportMaterialInterface) {
             _mm3_per_mm *= RESOLVE_OPTION(support_interface_flow_ratio);
+        }
+
+        if (small_perimeter && is_perimeter(path.role()) && !is_bridge(path.role())) {
+            _mm3_per_mm *= RESOLVE_OPTION(small_perimeter_flow_ratio);
         }
 
         // Additionally, adjust the value if we are on the first layer (except for brims and skirts)

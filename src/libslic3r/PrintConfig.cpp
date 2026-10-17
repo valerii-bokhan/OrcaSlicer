@@ -1777,6 +1777,17 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionFloat(1));
 
+    def = this->add("small_perimeter_flow_ratio", coFloat);
+    def->label = L("Small perimeters flow ratio");
+    def->category = L("Advanced");
+    def->tooltip = L("This factor affects the amount of material for small perimeters identified by the small perimeters threshold. "
+                     "It multiplies the inner or outer wall flow ratio and does not affect supports, overhangs or bridges. "
+                     "A threshold of zero disables this adjustment.");
+    def->min = 0;
+    def->max = 2;
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionFloat(1));
+
     def = this->add("support_flow_ratio", coFloat);
     def->label = L("Support flow ratio");
     def->category = L("Advanced");
