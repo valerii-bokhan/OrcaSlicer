@@ -41453,9 +41453,10 @@ msgid "Reset to defaults"
 msgstr "恢復預設"
 
 # AI Translated
-#, possible-c-format, possible-boost-format
-msgid "Table row %d: "
-msgstr "表格第 %d 列： "
+#. TRN %d is a one-based table row number, %s is the validation message for that row.
+#, c-format, boost-format
+msgid "Table row %d: %s"
+msgstr "表格第 %d 列：%s"
 
 # AI Translated
 msgid ""
@@ -41512,6 +41513,12 @@ msgstr "最後一個流量修正係數必須為 1。"
 # AI Translated
 msgid "The model is empty. No flow compensation will be applied."
 msgstr "模型為空，將不套用流量補償。"
+
+# AI Translated
+#. TRN %s is the reason the small area flow compensation model is invalid.
+#, c-format, boost-format
+msgid "Flow Compensation Model: %s"
+msgstr "流量補償模型：%s"
 
 # AI Translated
 msgid "Import CSV"

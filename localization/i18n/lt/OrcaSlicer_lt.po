@@ -41000,9 +41000,10 @@ msgid "Reset to defaults"
 msgstr "Pradiniai taškai"
 
 # AI Translated
-#, possible-c-format, possible-boost-format
-msgid "Table row %d: "
-msgstr "Lentelės eilutė %d: "
+#. TRN %d is a one-based table row number, %s is the validation message for that row.
+#, c-format, boost-format
+msgid "Table row %d: %s"
+msgstr "Lentelės eilutė %d: %s"
 
 # AI Translated
 # Needs human review: Check the UI term for the flow correction multiplier and the range bounds.
@@ -41065,6 +41066,12 @@ msgstr "Paskutinis srauto pataisos daugiklis – 1."
 # AI Translated
 msgid "The model is empty. No flow compensation will be applied."
 msgstr "Modelis tuščias. Srautas nebus kompensuojamas."
+
+# AI Translated
+#. TRN %s is the reason the small area flow compensation model is invalid.
+#, c-format, boost-format
+msgid "Flow Compensation Model: %s"
+msgstr "Srauto kompensavimo modelis: %s"
 
 # AI Translated
 # Needs human review: Check technical wording and concise UI phrasing.
