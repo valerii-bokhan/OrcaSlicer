@@ -537,8 +537,11 @@ TEST_CASE("Organic bodies widen going up by half a line a layer at most", "[Tree
         // The branch leans within the step.
         CHECK(contains(body, Point::new_scale(7.99 + 0.05 * double(i), 1.)));
         // Over the model top a body stands on it where it may, and widens by the branch angle where it may not.
-        if (i >= jump)
-            CHECK(contains(body, Point::new_scale(12., 2.95)) == (model_roots || 2. + move * double(i + 1 - jump) > 2.96));
+        if (i >= jump) {
+            const double over_model = model_roots ? 3. : 2. + move * double(i + 1 - jump);
+            CHECK(contains(body, Point::new_scale(12., over_model - 0.01)));
+            CHECK_FALSE(contains(body, Point::new_scale(12., over_model + 0.01)));
+        }
         // A sliver narrower than a line prints no wall to stand on.
         if (i == jump)
             CHECK_FALSE(contains(body, Point::new_scale(17.95, 2.2)));
@@ -661,6 +664,29 @@ TEST_CASE("Organic bodies merged going up narrow down into their trunks by the b
     }
     for (size_t i = merge_layer; i < num_layers; ++ i)
         CHECK(diff(storage[i].polygons, union_(merged, branches)).empty());
+}
+
+TEST_CASE("Organic trees inside hollow bodies stop when the slicing is cancelled", "[TreeSupport][Regression]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::TreeSupport3D;
+    TreeSupportSettings settings;
+    settings.support_line_width         = scaled<coord_t>(0.22);
+    settings.layer_height               = scaled<coord_t>(0.02);
+    settings.min_radius                 = scaled<coord_t>(0.4);
+    settings.maximum_move_distance      = scaled<coord_t>(0.01);
+    settings.maximum_move_distance_slow = scaled<coord_t>(0.01);
+    SupportGeneratorLayer layer;
+    layer.print_z  = 0.02;
+    layer.height   = 0.02;
+    layer.polygons = { make_circle_num_segments(scale_(5.), 64) };
+    SupportGeneratorLayersPtr bodies{ &layer };
+    const std::vector<Polygons> roofs(1), model(1);
+    const auto grow = [&] {
+        organic_grow_trees_inside_hollow_bodies(bodies, roofs, model, settings, scaled<coord_t>(0.235), settings.support_line_width,
+            {}, [] { throw CanceledException(); });
+    };
+    CHECK_THROWS_AS(grow(), CanceledException);
 }
 
 TEST_CASE("Organic roofs over the inside of a hollow body stand on trees grown inside it", "[TreeSupport][Material][Regression]")
@@ -918,8 +944,10 @@ TEST_CASE("Organic trees under a roof over a hollow body hold every line of its 
             longest = std::max(longest, unscaled<double>(free.length()));
         }
     }
-    CHECK(bridge <= spacing + line_width + 0.01);
-    CHECK(end <= line_width + 0.01);
+    // The code holds them to these, with lines touching within 0.375 of a line; measured here outside half a line.
+    const double touch = 0.375 * line_width, band = 0.5 * line_width - touch;
+    CHECK(bridge <= 2. * (reach - touch - band) + 0.01);
+    CHECK(end <= std::min(line_width, reach - touch) - band + 0.01);
 }
 
 TEST_CASE("Organic trees end on what their beads touch, not beside it", "[TreeSupport][Material][Regression]")
